@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Préstamos y Ventas - Centro Estudiantil</title>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes slideUp {
+            from { 
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to { 
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .animate-fadeIn {
+            animation: fadeIn 0.3s ease-out;
+        }
+        .animate-slideUp {
+            animation: slideUp 0.4s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script>
+        // Configuración de Firebase
+        const firebaseConfig = {
+            apiKey: "AIzaSyBWWbPoPVZCYKaJJRGg7tjcv8Scbfac9mw",
+            authDomain: "sistema-prestamos-cevez-d5893.firebaseapp.com",
+            projectId: "sistema-prestamos-cevez-d5893",
+            storageBucket: "sistema-prestamos-cevez-d5893.firebasestorage.app",
+            messagingSenderId: "843777088358",
+            appId: "1:843777088358:web:e90a3d68812387889346a7"
+        };
+
+        // Inicializar Firebase
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        // Usuarios autorizados
+        const USUARIOS_AUTORIZADOS = [
+            { username: 'aldana', email: 'aldana@cevez.com' },
+            { username: 'gabrielap', email: 'gabrielap@cevez.com' },
+            { username: 'valentina', email: 'valentina@cevez.com' },
+            { username: 'orianna', email: 'orianna@cevez.com' },
+            { username: 'gabrielaj', email: 'gabrielaj@cevez.com' },
+            { username: 'isabella', email: 'isabella@cevez.com' },
+            { username: 'miranda', email: 'miranda@cevez.com' },
+            { username: 'joaquin', email: 'joaquin@cevez.com' },
+            { username: 'mariajose', email: 'mariajose@cevez.com' },
+            { username: 'mathias', email: 'mathias@cevez.com' }
+        ];
+
+        const PASSWORD_INICIAL = 'CE2026VEZ';
+
+        // Los miembros se cargan SOLO desde Firebase - no están en el código por seguridad
+        const MIEMBROS_INICIALES = [];
+
+        // App principal
+        class App {
+            constructor() {
+                this.currentUser = null;
+                this.view = 'login';
+                this.miembros = [];
+                this.inventario = [];
+                this.prestamos = [];
+                this.ventas = [];
+                this.init();
+            }
+
+            async init() {
+                // Escuchar cambios de autenticación
+                auth.onAuthStateChanged(async (user) => {
+                    if (user) {
+                        this.currentUser = user;
+                        await this.cargarDatos();
+                        this.view = 'dashboard';
+                    } else {
+                        this.currentUser = null;
+                        this.view = 'login';
+                    }
+                    this.render();
+                });
+
+                // Inicializar datos si es la primera vez
+                await this.inicializarDatosIniciales();
+            }
+
+            async inicializarDatosIniciales() {
+                try {
+                    // Verificar si ya hay miembros en Firebase
+                    const miembrosSnapshot = await db.collection('miembros').limit(1).get();
+                    
+                    if (miembrosSnapshot.empty) {
+                        console.log('No hay miembros en Firebase. Agrégalos desde la consola de Firebase o desde la sección Miembros.');
+                    }
+
+                    // Verificar inventario
+                    const inventarioSnapshot = await db.collection('inventario').limit(1).get();
+                    
+                    if (inventarioSnapshot.empty) {
+                        // Crear inventario inicial
+                        const inventarioInicial = [
+                            // PRÉSTAMOS
+                            { nombre: 'Bata', tipo: 'prestamo', cantidad: 10, precioDiferenciado: true, precioMiembro: 0, precioNoMiembro: 3, unidades: Array.from({length: 10}, (_, i) => ({numero: i+1, disponible: true})) },
+                            { nombre: 'Calculadora', tipo: 'prestamo', cantidad: 3, precioDiferenciado: true, precioMiembro: 0, precioNoMiembro: 3, unidades: Array.from({length: 3}, (_, i) => ({numero: i+1, disponible: true})) },
+                            { nombre: 'Botas', tipo: 'prestamo', cantidad: 2, precioDiferenciado: true, precioMiembro: 0, precioNoMiembro: 3, unidades: Array.from({length: 2}, (_, i) => ({numero: i+1, disponible: true, talla: 'Sin especificar'})) },
+                            { nombre: 'Cuerda', tipo: 'prestamo', cantidad: 2, precioDiferenciado: true, precioMiembro: 0, precioNoMiembro: 3, unidades: Array.from({length: 2}, (_, i) => ({numero: i+1, disponible: true})) },
+                            // VENTAS
+                            { nombre: 'Guantes', tipo: 'venta', precioDiferenciado: false, precio: 1, stock: 100, alertaMinimo: 20 },
+                            { nombre: 'Cofia', tipo: 'venta', precioDiferenciado: false, precio: 1, stock: 100, alertaMinimo: 20 },
+                            { nombre: 'Café', tipo: 'venta', precioDiferenciado: true, precioMiembro: 3, precioNoMiembro: 5, stock: 50, alertaMinimo: 10, unidad: 'pods' }
+                        ];
+
+                        const batch2 = db.batch();
+                        inventarioInicial.forEach(item => {
+                            const docRef = db.collection('inventario').doc();
+                            batch2.set(docRef, item);
+                        });
+                        await batch2.commit();
+                        console.log('Inventario inicial creado');
+                    }
+
+                    // Crear usuarios en Authentication si no existen
+                    for (const usuario of USUARIOS_AUTORIZADOS) {
+                        try {
+                            await auth.createUserWithEmailAndPassword(usuario.email, PASSWORD_INICIAL);
+                            console.log(`Usuario ${usuario.username} creado`);
+                        } catch (error) {
+                            if (error.code !== 'auth/email-already-in-use') {
+                                console.error(`Error creando usuario ${usuario.username}:`, error);
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error inicializando datos:', error);
+                }
+            }
+
+            async cargarDatos() {
+                try {
+                    // Cargar miembros
+                    const miembrosSnapshot = await db.collection('miembros').get();
+                    this.miembros = miembrosSnapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+
+                    // Cargar inventario
+                    const inventarioSnapshot = await db.collection('inventario').get();
+                    this.inventario = inventarioSnapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+
+                    // Cargar préstamos activos
+                    const prestamosSnapshot = await db.collection('prestamos')
+                        .where('devuelto', '==', false)
+                        .get();
+                    this.prestamos = prestamosSnapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+
+                    // Cargar ventas de hoy
+                    const hoy = new Date();
+                    hoy.setHours(0, 0, 0, 0);
+                    const ventasSnapshot = await db.collection('ventas')
+                        .where('fecha', '>=', hoy.toISOString())
+                        .get();
+                    this.ventas = ventasSnapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+
+                    this.render();
+                } catch (error) {
+                    console.error('Error cargando datos:', error);
+                }
+            }
+
+            async login(username, password) {
+                const usuario = USUARIOS_AUTORIZADOS.find(u => u.username === username);
+                if (!usuario) {
+                    alert('Usuario no autorizado');
+                    return;
+                }
+
+                try {
+                    await auth.signInWithEmailAndPassword(usuario.email, password);
+                } catch (error) {
+                    console.error('Error en login:', error);
+                    alert('Error al iniciar sesión. Verifica tu contraseña.');
+                }
+            }
+
+            async logout() {
+                await auth.signOut();
+            }
+
+            async registrarPrestamo(datos) {
+                try {
+                    const prestamo = {
+                        ...datos,
+                        fechaHora: new Date().toISOString(),
+                        limiteDevolucion: new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString(),
+                        devuelto: false,
+                        usuarioRegistro: this.currentUser.email
+                    };
+
+                    // Guardar préstamo
+                    await db.collection('prestamos').add(prestamo);
+
+                    // Actualizar inventario
+                    const articulo = this.inventario.find(a => a.id === datos.articuloId);
+                    if (articulo) {
+                        const unidad = articulo.unidades.find(u => u.numero === datos.numeroUnidad);
+                        if (unidad) {
+                            unidad.disponible = false;
+                            await db.collection('inventario').doc(articulo.id).update({
+                                unidades: articulo.unidades
+                            });
+                        }
+                    }
+
+                    await this.cargarDatos();
+                    alert('¡Préstamo registrado exitosamente!');
+                    this.view = 'dashboard';
+                    this.render();
+                } catch (error) {
+                    console.error('Error registrando préstamo:', error);
+                    alert('Error al registrar préstamo');
+                }
+            }
+
+            async devolverPrestamo(prestamoId) {
+                try {
+                    const prestamo = this.prestamos.find(p => p.id === prestamoId);
+                    if (!prestamo) return;
+
+                    const ahora = new Date();
+                    const tardanza = new Date(ahora) > new Date(prestamo.limiteDevolucion);
+
+                    // Actualizar préstamo
+                    await db.collection('prestamos').doc(prestamoId).update({
+                        devuelto: true,
+                        tardanza,
+                        fechaDevolucion: ahora.toISOString(),
+                        usuarioDevolucion: this.currentUser.email
+                    });
+
+                    // Liberar unidad en inventario
+                    const articulo = this.inventario.find(a => a.id === prestamo.articuloId);
+                    if (articulo) {
+                        const unidad = articulo.unidades.find(u => u.numero === prestamo.numeroUnidad);
+                        if (unidad) {
+                            unidad.disponible = true;
+                            await db.collection('inventario').doc(articulo.id).update({
+                                unidades: articulo.unidades
+                            });
+                        }
+                    }
+
+                    await this.cargarDatos();
+                    alert(tardanza ? '¡Artículo devuelto con TARDANZA!' : '¡Artículo devuelto exitosamente!');
+                    this.render();
+                } catch (error) {
+                    console.error('Error en devolución:', error);
+                    alert('Error al devolver artículo');
+                }
+            }
+
+            async registrarVenta(datos) {
+                try {
+                    const venta = {
+                        ...datos,
+                        fecha: new Date().toISOString(),
+                        usuarioRegistro: this.currentUser.email
+                    };
+
+                    // Guardar venta
+                    await db.collection('ventas').add(venta);
+
+                    // Actualizar stock si es venta
+                    const articulo = this.inventario.find(a => a.id === datos.articuloId);
+                    if (articulo && articulo.tipo === 'venta') {
+                        const nuevoStock = (articulo.stock || 0) - datos.cantidad;
+                        await db.collection('inventario').doc(articulo.id).update({
+                            stock: nuevoStock
+                        });
+                    }
+
+                    await this.cargarDatos();
+                    alert('¡Venta registrada exitosamente!');
+                    this.view = 'dashboard';
+                    this.render();
+                } catch (error) {
+                    console.error('Error registrando venta:', error);
+                    alert('Error al registrar venta');
+                }
+            }
+
+            async exportarExcel() {
+                try {
+                    // Obtener todos los préstamos
+                    const prestamosSnapshot = await db.collection('prestamos').get();
+                    const todosPrestamos = prestamosSnapshot.docs.map(doc => doc.data());
+
+                    // Obtener todas las ventas
+                    const ventasSnapshot = await db.collection('ventas').get();
+                    const todasVentas = ventasSnapshot.docs.map(doc => doc.data());
+
+                    // Crear libro de Excel
+                    const wb = XLSX.utils.book_new();
+
+                    // Hoja de préstamos
+                    const wsPrestamos = XLSX.utils.json_to_sheet(todosPrestamos.map(p => ({
+                        'Fecha': new Date(p.fechaHora).toLocaleString('es-PE'),
+                        'DNI': p.dni,
+                        'Nombre': p.nombre,
+                        'Teléfono': p.telefono || '',
+                        'Ciclo': p.ciclo || '',
+                        'Artículo': p.nombreArticulo,
+                        'Número': p.numeroUnidad || '',
+                        'Es Miembro': p.esMiembro ? 'Sí' : 'No',
+                        'Monto': p.monto || 0,
+                        'Método Pago': p.metodoPago || '',
+                        'Devuelto': p.devuelto ? 'Sí' : 'No',
+                        'Tardanza': p.tardanza ? 'Sí' : 'No',
+                        'Fecha Devolución': p.fechaDevolucion ? new Date(p.fechaDevolucion).toLocaleString('es-PE') : ''
+                    })));
+                    XLSX.utils.book_append_sheet(wb, wsPrestamos, 'Préstamos');
+
+                    // Hoja de ventas
+                    const wsVentas = XLSX.utils.json_to_sheet(todasVentas.map(v => ({
+                        'Fecha': new Date(v.fecha).toLocaleString('es-PE'),
+                        'DNI': v.dni,
+                        'Nombre': v.nombre,
+                        'Teléfono': v.telefono || '',
+                        'Ciclo': v.ciclo || '',
+                        'Artículo': v.nombreArticulo,
+                        'Cantidad': v.cantidad,
+                        'Es Miembro': v.esMiembro ? 'Sí' : 'No',
+                        'Monto Total': v.montoTotal,
+                        'Método Pago': v.metodoPago
+                    })));
+                    XLSX.utils.book_append_sheet(wb, wsVentas, 'Ventas');
+
+                    // Descargar
+                    XLSX.writeFile(wb, `Reporte_${new Date().toISOString().split('T')[0]}.xlsx`);
+                } catch (error) {
+                    console.error('Error exportando:', error);
+                    alert('Error al exportar datos');
+                }
+            }
+
+            render() {
+                const root = document.getElementById('root');
+                
+                if (this.view === 'login') {
+                    root.innerHTML = this.renderLogin();
+                    this.attachLoginEvents();
+                } else {
+                    root.innerHTML = this.renderMain();
+                    this.attachMainEvents();
+                }
+            }
+
+            renderLogin() {
+                return `
+                    <div class="min-h-screen bg-gradient-to-br from-blue-600 to-indigo-800 flex items-center justify-center p-4">
+                        <div class="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+                            <div class="text-center mb-8">
+                                <h1 class="text-3xl font-bold text-gray-800 mb-2">Sistema CEVEZ</h1>
+                                <p class="text-gray-600">Préstamos y Ventas</p>
+                            </div>
+                            <form id="loginForm" class="space-y-6">
+                                <div>
+                                    <label class="block text-sm font-semibold text-gray-700 mb-2">Usuario</label>
+                                    <input 
+                                        type="text" 
+                                        id="username" 
+                                        class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                        placeholder="Tu nombre de usuario"
+                                        required
+                                    />
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-semibold text-gray-700 mb-2">Contraseña</label>
+                                    <input 
+                                        type="password" 
+                                        id="password" 
+                                        class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                        placeholder="Tu contraseña"
+                                        required
+                                    />
+                                </div>
+                                <button 
+                                    type="submit"
+                                    class="w-full bg-blue-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-blue-700 transition-colors shadow-lg"
+                                >
+                                    Iniciar Sesión
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderMain() {
+                return `
+                    <div class="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+                        <!-- Header -->
+                        <div class="bg-white shadow-md">
+                            <div class="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
+                                <div>
+                                    <h1 class="text-2xl font-bold text-gray-800">Sistema CEVEZ</h1>
+                                    <p class="text-sm text-gray-600">Usuario: ${this.currentUser?.email?.split('@')[0] || ''}</p>
+                                </div>
+                                <button 
+                                    id="logoutBtn"
+                                    class="bg-red-500 text-white px-6 py-2 rounded-lg hover:bg-red-600 transition-colors"
+                                >
+                                    Cerrar Sesión
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="max-w-7xl mx-auto p-4">
+                            <!-- Navigation -->
+                            <div class="flex gap-2 mb-6 overflow-x-auto pb-2">
+                                <button data-view="dashboard" class="view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap">Dashboard</button>
+                                <button data-view="prestamo" class="view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap">Nuevo Préstamo</button>
+                                <button data-view="venta" class="view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap">Nueva Venta</button>
+                                <button data-view="devolver" class="view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap">Devolver</button>
+                                <button data-view="inventario" class="view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap">Inventario</button>
+                                <button data-view="miembros" class="view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap">Miembros</button>
+                                <button id="exportarBtn" class="px-4 py-2 rounded-lg font-semibold whitespace-nowrap bg-green-600 text-white hover:bg-green-700">Exportar Excel</button>
+                            </div>
+
+                            <!-- Content -->
+                            <div id="mainContent"></div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            attachLoginEvents() {
+                document.getElementById('loginForm').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    const username = document.getElementById('username').value;
+                    const password = document.getElementById('password').value;
+                    this.login(username, password);
+                });
+            }
+
+            attachMainEvents() {
+                document.getElementById('logoutBtn').addEventListener('click', () => this.logout());
+                document.getElementById('exportarBtn').addEventListener('click', () => this.exportarExcel());
+                
+                document.querySelectorAll('.view-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        this.view = e.target.dataset.view;
+                        this.renderContent();
+                    });
+                });
+
+                this.renderContent();
+            }
+
+            renderContent() {
+                const content = document.getElementById('mainContent');
+                
+                // Actualizar botones activos
+                document.querySelectorAll('.view-btn').forEach(btn => {
+                    if (btn.dataset.view === this.view) {
+                        btn.className = 'view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap bg-blue-600 text-white shadow-lg';
+                    } else {
+                        btn.className = 'view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap bg-white text-gray-700 hover:bg-gray-50';
+                    }
+                });
+
+                switch(this.view) {
+                    case 'dashboard':
+                        content.innerHTML = this.renderDashboard();
+                        break;
+                    case 'prestamo':
+                        content.innerHTML = this.renderFormPrestamo();
+                        this.attachFormPrestamoEvents();
+                        break;
+                    case 'venta':
+                        content.innerHTML = this.renderFormVenta();
+                        this.attachFormVentaEvents();
+                        break;
+                    case 'devolver':
+                        content.innerHTML = this.renderDevolver();
+                        this.attachDevolverEvents();
+                        break;
+                    case 'inventario':
+                        content.innerHTML = this.renderInventario();
+                        break;
+                    case 'miembros':
+                        content.innerHTML = this.renderMiembros();
+                        break;
+                }
+            }
+
+            renderDashboard() {
+                const prestamosActivos = this.prestamos.length;
+                const ventasHoy = this.ventas.length;
+                const ingresosHoy = this.ventas.reduce((sum, v) => sum + (v.montoTotal || 0), 0) + 
+                                   this.prestamos.filter(p => !p.esMiembro).length * 3;
+
+                const alertas = this.prestamos.filter(p => {
+                    const ahora = new Date();
+                    const limite = new Date(p.limiteDevolucion);
+                    return ahora > limite;
+                });
+
+                return `
+                    <div class="space-y-6">
+                        <!-- Stats -->
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div class="bg-white rounded-xl p-6 shadow-md">
+                                <p class="text-gray-600 mb-2">Préstamos Activos</p>
+                                <p class="text-4xl font-bold text-blue-600">${prestamosActivos}</p>
+                            </div>
+                            <div class="bg-white rounded-xl p-6 shadow-md">
+                                <p class="text-gray-600 mb-2">Ventas Hoy</p>
+                                <p class="text-4xl font-bold text-green-600">${ventasHoy}</p>
+                            </div>
+                            <div class="bg-white rounded-xl p-6 shadow-md">
+                                <p class="text-gray-600 mb-2">Ingresos Hoy</p>
+                                <p class="text-4xl font-bold text-yellow-600">S/ ${ingresosHoy.toFixed(2)}</p>
+                            </div>
+                        </div>
+
+                        ${alertas.length > 0 ? `
+                        <div class="bg-red-50 border-2 border-red-200 rounded-xl p-6">
+                            <h2 class="text-xl font-bold text-red-800 mb-4">⚠️ Artículos con Tardanza (${alertas.length})</h2>
+                            <div class="space-y-2">
+                                ${alertas.map(p => `
+                                    <div class="bg-white rounded-lg p-3 border-l-4 border-red-500">
+                                        <p class="font-semibold">${p.nombre} - ${p.nombreArticulo} #${p.numeroUnidad}</p>
+                                        <p class="text-sm text-gray-600">DNI: ${p.dni} | Tel: ${p.telefono}</p>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                        ` : ''}
+
+                        <!-- Inventario bajo -->
+                        <div class="bg-white rounded-xl p-6 shadow-md">
+                            <h2 class="text-xl font-bold text-gray-800 mb-4">Estado del Inventario</h2>
+                            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                ${this.inventario.map(item => {
+                                    if (item.tipo === 'prestamo') {
+                                        const disponibles = item.unidades.filter(u => u.disponible).length;
+                                        return `
+                                            <div class="bg-blue-50 rounded-lg p-4">
+                                                <p class="text-sm text-gray-600">${item.nombre}</p>
+                                                <p class="text-2xl font-bold text-blue-600">${disponibles}/${item.cantidad}</p>
+                                            </div>
+                                        `;
+                                    } else {
+                                        const bajo = item.stock <= item.alertaMinimo;
+                                        return `
+                                            <div class="bg-${bajo ? 'red' : 'green'}-50 rounded-lg p-4">
+                                                <p class="text-sm text-gray-600">${item.nombre}</p>
+                                                <p class="text-2xl font-bold text-${bajo ? 'red' : 'green'}-600">${item.stock}</p>
+                                                ${bajo ? '<p class="text-xs text-red-600 mt-1">⚠️ Stock bajo</p>' : ''}
+                                            </div>
+                                        `;
+                                    }
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderFormPrestamo() {
+                const articulosPrestamo = this.inventario.filter(a => a.tipo === 'prestamo');
+                
+                return `
+                    <div class="bg-white rounded-xl p-6 shadow-md max-w-2xl mx-auto">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-6">Nuevo Préstamo</h2>
+                        <form id="formPrestamo" class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">DNI</label>
+                                <input type="text" id="dniPrestamo" maxlength="8" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Nombre</label>
+                                <input type="text" id="nombrePrestamo" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Teléfono</label>
+                                <input type="text" id="telefonoPrestamo" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Ciclo</label>
+                                <input type="text" id="cicloPrestamo" placeholder="1ero, 2do, 3ero..." class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">¿Es miembro?</label>
+                                <div class="flex gap-4">
+                                    <button type="button" data-miembro="true" class="miembro-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100">Sí</button>
+                                    <button type="button" data-miembro="false" class="miembro-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100">No</button>
+                                </div>
+                                <input type="hidden" id="esMiembroPrestamo" value="true" />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Artículo</label>
+                                <select id="articuloPrestamo" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required>
+                                    <option value="">Selecciona...</option>
+                                    ${articulosPrestamo.map(a => {
+                                        const disponibles = a.unidades.filter(u => u.disponible).length;
+                                        return `<option value="${a.id}" ${disponibles === 0 ? 'disabled' : ''}>${a.nombre} (${disponibles} disponibles)</option>`;
+                                    }).join('')}
+                                </select>
+                            </div>
+                            <div id="unidadesContainer" class="hidden">
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Número de Unidad</label>
+                                <select id="unidadPrestamo" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none">
+                                    <option value="">Selecciona...</option>
+                                </select>
+                            </div>
+                            <div id="pagoContainer" class="hidden">
+                                <div class="bg-yellow-50 border-2 border-yellow-200 rounded-lg p-4 mb-4">
+                                    <p class="text-yellow-800 font-semibold">Costo: S/ 3.00 (máximo 5 horas)</p>
+                                </div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Método de Pago</label>
+                                <div class="flex gap-4">
+                                    <button type="button" data-pago="efectivo" class="pago-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100">Efectivo</button>
+                                    <button type="button" data-pago="yape" class="pago-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100">Yape</button>
+                                </div>
+                                <input type="hidden" id="metodoPagoPrestamo" value="efectivo" />
+                            </div>
+                            <button type="submit" class="w-full bg-blue-600 text-white py-4 rounded-lg font-bold text-lg hover:bg-blue-700">
+                                Registrar Préstamo
+                            </button>
+                        </form>
+                    </div>
+                `;
+            }
+
+            attachFormPrestamoEvents() {
+                const dniInput = document.getElementById('dniPrestamo');
+                const nombreInput = document.getElementById('nombrePrestamo');
+                const telefonoInput = document.getElementById('telefonoPrestamo');
+                const cicloInput = document.getElementById('cicloPrestamo');
+                const esMiembroInput = document.getElementById('esMiembroPrestamo');
+                const articuloSelect = document.getElementById('articuloPrestamo');
+                const unidadSelect = document.getElementById('unidadPrestamo');
+                const unidadesContainer = document.getElementById('unidadesContainer');
+                const pagoContainer = document.getElementById('pagoContainer');
+
+                // Autocompletar con DNI
+                dniInput.addEventListener('input', () => {
+                    const dni = dniInput.value;
+                    const miembro = this.miembros.find(m => m.dni === dni);
+                    if (miembro) {
+                        nombreInput.value = miembro.nombre;
+                        telefonoInput.value = miembro.telefono || '';
+                        cicloInput.value = miembro.ciclo || '';
+                        esMiembroInput.value = 'true';
+                        document.querySelectorAll('.miembro-btn').forEach(btn => {
+                            btn.className = btn.dataset.miembro === 'true' 
+                                ? 'miembro-btn flex-1 py-3 rounded-lg font-semibold bg-green-600 text-white shadow-lg'
+                                : 'miembro-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100';
+                        });
+                        pagoContainer.classList.add('hidden');
+                    }
+                });
+
+                // Botones de miembro
+                document.querySelectorAll('.miembro-btn').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const esMiembro = btn.dataset.miembro === 'true';
+                        esMiembroInput.value = esMiembro;
+                        document.querySelectorAll('.miembro-btn').forEach(b => {
+                            b.className = b === btn 
+                                ? 'miembro-btn flex-1 py-3 rounded-lg font-semibold bg-green-600 text-white shadow-lg'
+                                : 'miembro-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100';
+                        });
+                        pagoContainer.classList.toggle('hidden', esMiembro);
+                    });
+                });
+
+                // Botones de pago
+                document.querySelectorAll('.pago-btn').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        document.getElementById('metodoPagoPrestamo').value = btn.dataset.pago;
+                        document.querySelectorAll('.pago-btn').forEach(b => {
+                            b.className = b === btn 
+                                ? 'pago-btn flex-1 py-3 rounded-lg font-semibold bg-purple-600 text-white shadow-lg'
+                                : 'pago-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100';
+                        });
+                    });
+                });
+
+                // Cambio de artículo
+                articuloSelect.addEventListener('change', () => {
+                    const articuloId = articuloSelect.value;
+                    const articulo = this.inventario.find(a => a.id === articuloId);
+                    
+                    if (articulo) {
+                        const unidadesDisponibles = articulo.unidades.filter(u => u.disponible);
+                        unidadSelect.innerHTML = '<option value="">Selecciona...</option>' +
+                            unidadesDisponibles.map(u => 
+                                `<option value="${u.numero}">#${u.numero}${u.talla ? ` - Talla ${u.talla}` : ''}</option>`
+                            ).join('');
+                        unidadesContainer.classList.remove('hidden');
+                    } else {
+                        unidadesContainer.classList.add('hidden');
+                    }
+                });
+
+                // Submit
+                document.getElementById('formPrestamo').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    const articulo = this.inventario.find(a => a.id === articuloSelect.value);
+                    const esMiembro = esMiembroInput.value === 'true';
+                    
+                    this.registrarPrestamo({
+                        dni: dniInput.value,
+                        nombre: nombreInput.value,
+                        telefono: telefonoInput.value,
+                        ciclo: cicloInput.value,
+                        esMiembro,
+                        articuloId: articuloSelect.value,
+                        nombreArticulo: articulo.nombre,
+                        numeroUnidad: parseInt(unidadSelect.value),
+                        monto: esMiembro ? 0 : 3,
+                        metodoPago: esMiembro ? '' : document.getElementById('metodoPagoPrestamo').value
+                    });
+                });
+            }
+
+            renderFormVenta() {
+                const articulosVenta = this.inventario.filter(a => a.tipo === 'venta' && a.stock > 0);
+                
+                return `
+                    <div class="bg-white rounded-xl p-6 shadow-md max-w-2xl mx-auto">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-6">Nueva Venta</h2>
+                        <form id="formVenta" class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">DNI</label>
+                                <input type="text" id="dniVenta" maxlength="8" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Nombre</label>
+                                <input type="text" id="nombreVenta" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Teléfono</label>
+                                <input type="text" id="telefonoVenta" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Ciclo</label>
+                                <input type="text" id="cicloVenta" placeholder="1ero, 2do, 3ero..." class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Artículo</label>
+                                <select id="articuloVenta" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required>
+                                    <option value="">Selecciona...</option>
+                                    ${articulosVenta.map(a => 
+                                        `<option value="${a.id}">${a.nombre} (Stock: ${a.stock})</option>`
+                                    ).join('')}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Cantidad</label>
+                                <input type="number" id="cantidadVenta" min="1" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div id="precioInfo" class="bg-blue-50 border-2 border-blue-200 rounded-lg p-4 hidden">
+                                <p id="precioTexto" class="text-blue-800 font-semibold"></p>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Método de Pago</label>
+                                <div class="flex gap-4">
+                                    <button type="button" data-pago="efectivo" class="pago-venta-btn flex-1 py-3 rounded-lg font-semibold bg-green-600 text-white shadow-lg">Efectivo</button>
+                                    <button type="button" data-pago="yape" class="pago-venta-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100">Yape</button>
+                                </div>
+                                <input type="hidden" id="metodoPagoVenta" value="efectivo" />
+                            </div>
+                            <button type="submit" class="w-full bg-green-600 text-white py-4 rounded-lg font-bold text-lg hover:bg-green-700">
+                                Registrar Venta
+                            </button>
+                        </form>
+                    </div>
+                `;
+            }
+
+            attachFormVentaEvents() {
+                const dniInput = document.getElementById('dniVenta');
+                const nombreInput = document.getElementById('nombreVenta');
+                const telefonoInput = document.getElementById('telefonoVenta');
+                const cicloInput = document.getElementById('cicloVenta');
+                const articuloSelect = document.getElementById('articuloVenta');
+                const cantidadInput = document.getElementById('cantidadVenta');
+                const precioInfo = document.getElementById('precioInfo');
+                const precioTexto = document.getElementById('precioTexto');
+
+                let esMiembro = false;
+
+                // Autocompletar con DNI
+                dniInput.addEventListener('input', () => {
+                    const dni = dniInput.value;
+                    const miembro = this.miembros.find(m => m.dni === dni);
+                    if (miembro) {
+                        nombreInput.value = miembro.nombre;
+                        telefonoInput.value = miembro.telefono || '';
+                        cicloInput.value = miembro.ciclo || '';
+                        esMiembro = true;
+                    } else {
+                        esMiembro = false;
+                    }
+                    actualizarPrecio();
+                });
+
+                const actualizarPrecio = () => {
+                    const articuloId = articuloSelect.value;
+                    const cantidad = parseInt(cantidadInput.value) || 0;
+                    const articulo = this.inventario.find(a => a.id === articuloId);
+
+                    if (articulo && cantidad > 0) {
+                        let precioUnitario;
+                        if (articulo.precioDiferenciado) {
+                            precioUnitario = esMiembro ? articulo.precioMiembro : articulo.precioNoMiembro;
+                            precioTexto.innerHTML = `Precio ${esMiembro ? 'Miembro' : 'No-Miembro'}: S/ ${precioUnitario} x ${cantidad} = <strong>S/ ${(precioUnitario * cantidad).toFixed(2)}</strong>`;
+                        } else {
+                            precioUnitario = articulo.precio;
+                            precioTexto.innerHTML = `Precio: S/ ${precioUnitario} x ${cantidad} = <strong>S/ ${(precioUnitario * cantidad).toFixed(2)}</strong>`;
+                        }
+                        precioInfo.classList.remove('hidden');
+                    } else {
+                        precioInfo.classList.add('hidden');
+                    }
+                };
+
+                articuloSelect.addEventListener('change', actualizarPrecio);
+                cantidadInput.addEventListener('input', actualizarPrecio);
+
+                // Botones de pago
+                document.querySelectorAll('.pago-venta-btn').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        document.getElementById('metodoPagoVenta').value = btn.dataset.pago;
+                        document.querySelectorAll('.pago-venta-btn').forEach(b => {
+                            b.className = b === btn 
+                                ? 'pago-venta-btn flex-1 py-3 rounded-lg font-semibold bg-purple-600 text-white shadow-lg'
+                                : 'pago-venta-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100';
+                        });
+                    });
+                });
+
+                // Submit
+                document.getElementById('formVenta').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    const articulo = this.inventario.find(a => a.id === articuloSelect.value);
+                    const cantidad = parseInt(cantidadInput.value);
+                    
+                    if (cantidad > articulo.stock) {
+                        alert('No hay suficiente stock');
+                        return;
+                    }
+
+                    let precioUnitario;
+                    if (articulo.precioDiferenciado) {
+                        precioUnitario = esMiembro ? articulo.precioMiembro : articulo.precioNoMiembro;
+                    } else {
+                        precioUnitario = articulo.precio;
+                    }
+
+                    this.registrarVenta({
+                        dni: dniInput.value,
+                        nombre: nombreInput.value,
+                        telefono: telefonoInput.value,
+                        ciclo: cicloInput.value,
+                        esMiembro,
+                        articuloId: articuloSelect.value,
+                        nombreArticulo: articulo.nombre,
+                        cantidad,
+                        precioUnitario,
+                        montoTotal: precioUnitario * cantidad,
+                        metodoPago: document.getElementById('metodoPagoVenta').value
+                    });
+                });
+            }
+
+            renderDevolver() {
+                return `
+                    <div class="bg-white rounded-xl p-6 shadow-md max-w-4xl mx-auto">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-6">Devolver Artículos</h2>
+                        <input 
+                            type="text" 
+                            id="busquedaDevolucion"
+                            placeholder="Buscar por DNI o nombre..."
+                            class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none mb-6"
+                        />
+                        <div id="listaPrestamos" class="space-y-3">
+                            ${this.prestamos.length === 0 ? '<p class="text-gray-500 text-center py-8">No hay préstamos activos</p>' : 
+                                this.prestamos.map(p => {
+                                    const ahora = new Date();
+                                    const limite = new Date(p.limiteDevolucion);
+                                    const pasadoLimite = ahora > limite;
+                                    
+                                    return `
+                                        <div class="rounded-lg p-4 border-2 ${pasadoLimite ? 'bg-red-50 border-red-300' : 'bg-gray-50 border-gray-300'}" data-prestamo="${p.id}" data-dni="${p.dni}" data-nombre="${p.nombre.toLowerCase()}">
+                                            <div class="flex justify-between items-start mb-3">
+                                                <div>
+                                                    <p class="font-bold text-lg">${p.nombre}</p>
+                                                    <p class="text-sm text-gray-600">DNI: ${p.dni} | Tel: ${p.telefono}</p>
+                                                    <p class="text-sm font-medium text-gray-700 mt-1">${p.nombreArticulo} #${p.numeroUnidad}</p>
+                                                </div>
+                                                <span class="px-3 py-1 rounded-full text-xs font-semibold ${p.esMiembro ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}">
+                                                    ${p.esMiembro ? 'Miembro' : 'S/ 3.00'}
+                                                </span>
+                                            </div>
+                                            <p class="text-sm text-gray-600 mb-3">
+                                                Prestado: ${new Date(p.fechaHora).toLocaleString('es-PE')}
+                                            </p>
+                                            ${pasadoLimite ? '<div class="bg-red-100 border border-red-300 rounded p-2 mb-3"><p class="text-red-800 font-semibold text-sm">⚠️ Pasó el límite de 5 horas</p></div>' : ''}
+                                            <button 
+                                                onclick="app.devolverPrestamo('${p.id}')"
+                                                class="w-full bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700"
+                                            >
+                                                Marcar como Devuelto
+                                            </button>
+                                        </div>
+                                    `;
+                                }).join('')
+                            }
+                        </div>
+                    </div>
+                `;
+            }
+
+            attachDevolverEvents() {
+                const busqueda = document.getElementById('busquedaDevolucion');
+                busqueda.addEventListener('input', (e) => {
+                    const termino = e.target.value.toLowerCase();
+                    document.querySelectorAll('[data-prestamo]').forEach(elem => {
+                        const dni = elem.dataset.dni;
+                        const nombre = elem.dataset.nombre;
+                        if (dni.includes(termino) || nombre.includes(termino)) {
+                            elem.style.display = 'block';
+                        } else {
+                            elem.style.display = 'none';
+                        }
+                    });
+                });
+            }
+
+            renderInventario() {
+                return `
+                    <div class="bg-white rounded-xl p-6 shadow-md">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-6">Gestión de Inventario</h2>
+                        <div class="space-y-4">
+                            ${this.inventario.map(item => `
+                                <div class="border-2 border-gray-200 rounded-lg p-4">
+                                    <div class="flex justify-between items-start">
+                                        <div>
+                                            <h3 class="text-lg font-bold text-gray-800">${item.nombre}</h3>
+                                            <p class="text-sm text-gray-600">Tipo: ${item.tipo === 'prestamo' ? 'Préstamo' : 'Venta'}</p>
+                                            ${item.tipo === 'prestamo' ? 
+                                                `<p class="text-sm text-gray-600">Cantidad: ${item.cantidad} unidades</p>
+                                                <p class="text-sm text-gray-600">Disponibles: ${item.unidades.filter(u => u.disponible).length}</p>` :
+                                                `<p class="text-sm text-gray-600">Stock: ${item.stock} ${item.unidad || 'unidades'}</p>`
+                                            }
+                                            ${item.precioDiferenciado ?
+                                                `<p class="text-sm font-semibold text-green-700">Miembro: S/ ${item.precioMiembro} | No-Miembro: S/ ${item.precioNoMiembro}</p>` :
+                                                `<p class="text-sm font-semibold text-blue-700">Precio: S/ ${item.precio}</p>`
+                                            }
+                                        </div>
+                                        <span class="px-3 py-1 rounded-full text-xs font-semibold ${item.tipo === 'prestamo' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}">
+                                            ${item.tipo === 'prestamo' ? 'PRÉSTAMO' : 'VENTA'}
+                                        </span>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                        <p class="mt-6 text-sm text-gray-600 text-center">Para editar inventario, contacta al administrador del sistema</p>
+                    </div>
+                `;
+            }
+
+            renderMiembros() {
+                return `
+                    <div class="bg-white rounded-xl p-6 shadow-md">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-6">Base de Datos de Miembros</h2>
+                        <div class="overflow-x-auto">
+                            <table class="w-full">
+                                <thead>
+                                    <tr class="bg-gray-100">
+                                        <th class="px-4 py-2 text-left">DNI</th>
+                                        <th class="px-4 py-2 text-left">Nombre</th>
+                                        <th class="px-4 py-2 text-left">Teléfono</th>
+                                        <th class="px-4 py-2 text-left">Ciclo</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${this.miembros.map(m => `
+                                        <tr class="border-b">
+                                            <td class="px-4 py-2">${m.dni}</td>
+                                            <td class="px-4 py-2">${m.nombre}</td>
+                                            <td class="px-4 py-2">${m.telefono || '-'}</td>
+                                            <td class="px-4 py-2">${m.ciclo || '-'}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                        <p class="mt-6 text-sm text-gray-600 text-center">Total: ${this.miembros.length} miembros registrados</p>
+                    </div>
+                `;
+            }
+        }
+
+        // Iniciar app
+        const app = new App();
+        window.app = app; // Para acceder desde onclick
+    </script>
+</body>
+</html>
