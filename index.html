@@ -1,0 +1,2406 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Préstamos y Ventas - Centro Estudiantil</title>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes slideUp {
+            from { 
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to { 
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .animate-fadeIn {
+            animation: fadeIn 0.3s ease-out;
+        }
+        .animate-slideUp {
+            animation: slideUp 0.4s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script>
+        // Configuración de Firebase
+        const firebaseConfig = {
+            apiKey: "AIzaSyBWWbPoPVZCYKaJJRGg7tjcv8Scbfac9mw",
+            authDomain: "sistema-prestamos-cevez-d5893.firebaseapp.com",
+            projectId: "sistema-prestamos-cevez-d5893",
+            storageBucket: "sistema-prestamos-cevez-d5893.firebasestorage.app",
+            messagingSenderId: "843777088358",
+            appId: "1:843777088358:web:e90a3d68812387889346a7"
+        };
+
+        // Inicializar Firebase
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        // Usuarios autorizados
+        const USUARIOS_AUTORIZADOS = [
+            { username: 'aldana', email: 'aldana@cevez.com', esAdmin: false },
+            { username: 'gabrielap', email: 'gabrielap@cevez.com', esAdmin: false },
+            { username: 'valentina', email: 'valentina@cevez.com', esAdmin: false },
+            { username: 'orianna', email: 'orianna@cevez.com', esAdmin: false },
+            { username: 'gabrielaj', email: 'gabrielaj@cevez.com', esAdmin: false },
+            { username: 'isabella', email: 'isabella@cevez.com', esAdmin: false },
+            { username: 'miranda', email: 'miranda@cevez.com', esAdmin: false },
+            { username: 'joaquin', email: 'joaquin@cevez.com', esAdmin: false },
+            { username: 'mariajose', email: 'mariajose@cevez.com', esAdmin: false },
+            { username: 'mathias', email: 'mathias@cevez.com', esAdmin: false },
+            { username: 'admincevez', email: 'admincevez@cevez.com', esAdmin: true }
+        ];
+
+        const PASSWORD_INICIAL = 'XYZ292929';
+
+        // Los miembros se cargan SOLO desde Firebase - no están en el código por seguridad
+        const MIEMBROS_INICIALES = [];
+
+        // App principal
+        class App {
+            constructor() {
+                this.currentUser = null;
+                this.view = 'login';
+                this.miembros = [];
+                this.inventario = [];
+                this.prestamos = [];
+                this.prestamosHoy = [];
+                this.prestamosDevueltosHoy = [];
+                this.ventas = [];
+                this.isAdmin = false;
+                this.esAdminDedicado = false;
+                this.init();
+            }
+
+            async init() {
+                // Escuchar cambios de autenticación
+                auth.onAuthStateChanged(async (user) => {
+                    if (user) {
+                        this.currentUser = user;
+                        this.esAdminDedicado = user.email === 'admincevez@cevez.com';
+                        await this.cargarDatos();
+                        this.view = this.esAdminDedicado ? 'admin' : 'dashboard';
+                    } else {
+                        this.currentUser = null;
+                        this.esAdminDedicado = false;
+                        this.view = 'login';
+                    }
+                    this.render();
+                });
+
+                // Inicializar datos si es la primera vez
+                await this.inicializarDatosIniciales();
+            }
+
+            async inicializarDatosIniciales() {
+                try {
+                    // Verificar si ya hay miembros en Firebase
+                    const miembrosSnapshot = await db.collection('miembros').limit(1).get();
+                    
+                    if (miembrosSnapshot.empty) {
+                        console.log('No hay miembros en Firebase. Agrégalos desde la consola de Firebase o desde la sección Miembros.');
+                    }
+
+                    // Verificar inventario
+                    const inventarioSnapshot = await db.collection('inventario').limit(1).get();
+                    
+                    if (inventarioSnapshot.empty) {
+                        // Crear inventario inicial
+                        const inventarioInicial = [
+                            // PRÉSTAMOS
+                            { nombre: 'Bata', tipo: 'prestamo', cantidad: 10, precioDiferenciado: true, precioMiembro: 0, precioNoMiembro: 3, unidades: Array.from({length: 10}, (_, i) => ({numero: i+1, disponible: true})) },
+                            { nombre: 'Calculadora', tipo: 'prestamo', cantidad: 3, precioDiferenciado: true, precioMiembro: 0, precioNoMiembro: 3, unidades: Array.from({length: 3}, (_, i) => ({numero: i+1, disponible: true})) },
+                            { nombre: 'Botas', tipo: 'prestamo', cantidad: 2, precioDiferenciado: true, precioMiembro: 0, precioNoMiembro: 3, unidades: Array.from({length: 2}, (_, i) => ({numero: i+1, disponible: true, talla: 'Sin especificar'})) },
+                            { nombre: 'Cuerda', tipo: 'prestamo', cantidad: 2, precioDiferenciado: true, precioMiembro: 0, precioNoMiembro: 3, unidades: Array.from({length: 2}, (_, i) => ({numero: i+1, disponible: true})) },
+                            // VENTAS
+                            { nombre: 'Guantes', tipo: 'venta', precioDiferenciado: false, precio: 1, stock: 100, alertaMinimo: 20 },
+                            { nombre: 'Cofia', tipo: 'venta', precioDiferenciado: false, precio: 1, stock: 100, alertaMinimo: 20 },
+                            { nombre: 'Café', tipo: 'venta', precioDiferenciado: true, precioMiembro: 3, precioNoMiembro: 5, stock: 50, alertaMinimo: 10, unidad: 'pods' }
+                        ];
+
+                        const batch2 = db.batch();
+                        inventarioInicial.forEach(item => {
+                            const docRef = db.collection('inventario').doc();
+                            batch2.set(docRef, item);
+                        });
+                        await batch2.commit();
+                        console.log('Inventario inicial creado');
+                    }
+
+                    // Crear usuarios en Authentication si no existen
+                    for (const usuario of USUARIOS_AUTORIZADOS) {
+                        try {
+                            await auth.createUserWithEmailAndPassword(usuario.email, PASSWORD_INICIAL);
+                            console.log(`Usuario ${usuario.username} creado`);
+                        } catch (error) {
+                            if (error.code !== 'auth/email-already-in-use') {
+                                console.error(`Error creando usuario ${usuario.username}:`, error);
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error inicializando datos:', error);
+                }
+            }
+
+            async cargarDatos() {
+                try {
+                    // Cargar miembros ordenados alfabéticamente
+                    const miembrosSnapshot = await db.collection('miembros').get();
+                    this.miembros = miembrosSnapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    })).sort((a, b) => a.nombre.localeCompare(b.nombre));
+
+                    // Cargar inventario
+                    const inventarioSnapshot = await db.collection('inventario').get();
+                    this.inventario = inventarioSnapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+
+                    // Cargar préstamos activos
+                    const prestamosSnapshot = await db.collection('prestamos')
+                        .where('devuelto', '==', false)
+                        .get();
+                    this.prestamos = prestamosSnapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+
+                    // Cargar préstamos hechos hoy (para ingresos)
+                    const hoy = new Date();
+                    hoy.setHours(0, 0, 0, 0);
+                    const prestamosHoySnapshot = await db.collection('prestamos')
+                        .where('fechaHora', '>=', hoy.toISOString())
+                        .get();
+                    this.prestamosHoy = prestamosHoySnapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+
+                    // Cargar préstamos devueltos hoy (para sanciones)
+                    const prestamosDevueltosSnapshot = await db.collection('prestamos')
+                        .where('devuelto', '==', true)
+                        .where('fechaDevolucion', '>=', hoy.toISOString())
+                        .get();
+                    this.prestamosDevueltosHoy = prestamosDevueltosSnapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+
+                    // Cargar ventas de hoy
+                    const ventasSnapshot = await db.collection('ventas')
+                        .where('fecha', '>=', hoy.toISOString())
+                        .get();
+                    this.ventas = ventasSnapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+
+                    this.render();
+                } catch (error) {
+                    console.error('Error cargando datos:', error);
+                }
+            }
+
+            async login(username, password) {
+                const usuario = USUARIOS_AUTORIZADOS.find(u => u.username === username);
+                if (!usuario) {
+                    alert('Usuario no autorizado');
+                    return;
+                }
+
+                try {
+                    await auth.signInWithEmailAndPassword(usuario.email, password);
+                } catch (error) {
+                    console.error('Error en login:', error);
+                    alert('Error al iniciar sesión. Verifica tu contraseña.');
+                }
+            }
+
+            async logout() {
+                await auth.signOut();
+            }
+
+            async cambiarContrasena(nuevaContrasena) {
+                try {
+                    await this.currentUser.updatePassword(nuevaContrasena);
+                    alert('¡Contraseña cambiada exitosamente!');
+                    return true;
+                } catch (error) {
+                    console.error('Error cambiando contraseña:', error);
+                    if (error.code === 'auth/requires-recent-login') {
+                        alert('Por seguridad, necesitas cerrar sesión y volver a entrar para cambiar tu contraseña');
+                    } else {
+                        alert('Error al cambiar contraseña: ' + error.message);
+                    }
+                    return false;
+                }
+            }
+
+            async registrarPrestamo(datos) {
+                try {
+                    const prestamo = {
+                        ...datos,
+                        fechaHora: new Date().toISOString(),
+                        limiteDevolucion: new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString(),
+                        devuelto: false,
+                        usuarioRegistro: this.currentUser.email
+                    };
+
+                    // Guardar préstamo
+                    await db.collection('prestamos').add(prestamo);
+
+                    // Actualizar inventario
+                    const articulo = this.inventario.find(a => a.id === datos.articuloId);
+                    if (articulo) {
+                        const unidad = articulo.unidades.find(u => u.numero === datos.numeroUnidad);
+                        if (unidad) {
+                            unidad.disponible = false;
+                            await db.collection('inventario').doc(articulo.id).update({
+                                unidades: articulo.unidades
+                            });
+                        }
+                    }
+
+                    await this.cargarDatos();
+                    this.mostrarConfirmacion('préstamo', datos);
+                } catch (error) {
+                    console.error('Error registrando préstamo:', error);
+                    alert('Error al registrar préstamo');
+                }
+            }
+
+            async devolverPrestamo(prestamoId, datosDevolucion = {}) {
+                try {
+                    const prestamo = this.prestamos.find(p => p.id === prestamoId);
+                    if (!prestamo) return;
+
+                    const ahora = new Date();
+                    const tardanza = datosDevolucion.tardanza || false;
+                    const estadoOk = datosDevolucion.estadoOk !== undefined ? datosDevolucion.estadoOk : true;
+                    const sancion = datosDevolucion.sancion || 0;
+                    const metodoPago = datosDevolucion.metodoPago || '';
+
+                    // Actualizar préstamo
+                    await db.collection('prestamos').doc(prestamoId).update({
+                        devuelto: true,
+                        tardanza,
+                        estadoOk,
+                        sancion,
+                        metodoPagoSancion: metodoPago,
+                        fechaDevolucion: ahora.toISOString(),
+                        usuarioDevolucion: this.currentUser.email
+                    });
+
+                    // Liberar unidad en inventario
+                    const articulo = this.inventario.find(a => a.id === prestamo.articuloId);
+                    if (articulo) {
+                        const unidad = articulo.unidades.find(u => u.numero === prestamo.numeroUnidad);
+                        if (unidad) {
+                            unidad.disponible = true;
+                            await db.collection('inventario').doc(articulo.id).update({
+                                unidades: articulo.unidades
+                            });
+                        }
+                    }
+
+                    await this.cargarDatos();
+                    this.mostrarConfirmacion('devolucion', { ...prestamo, tardanza, estadoOk, sancion, metodoPago });
+                } catch (error) {
+                    console.error('Error en devolución:', error);
+                    alert('Error al devolver artículo');
+                }
+            }
+
+            async registrarVenta(datos) {
+                try {
+                    const venta = {
+                        ...datos,
+                        fecha: new Date().toISOString(),
+                        usuarioRegistro: this.currentUser.email
+                    };
+
+                    // Guardar venta
+                    await db.collection('ventas').add(venta);
+
+                    // Actualizar stock si es venta
+                    const articulo = this.inventario.find(a => a.id === datos.articuloId);
+                    if (articulo && articulo.tipo === 'venta') {
+                        const nuevoStock = (articulo.stock || 0) - datos.cantidad;
+                        await db.collection('inventario').doc(articulo.id).update({
+                            stock: nuevoStock
+                        });
+                    }
+
+                    await this.cargarDatos();
+                    this.mostrarConfirmacion('venta', datos);
+                } catch (error) {
+                    console.error('Error registrando venta:', error);
+                    alert('Error al registrar venta');
+                }
+            }
+
+            mostrarConfirmacion(tipo, datos) {
+                const overlay = document.createElement('div');
+                overlay.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 animate-fadeIn';
+                overlay.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 9999;';
+                
+                let icono = '';
+                let titulo = '';
+                let detalles = '';
+                let color = 'green';
+                
+                const usuarioActual = this.currentUser.email.split('@')[0];
+                
+                if (tipo === 'préstamo') {
+                    icono = '✅';
+                    titulo = '¡Préstamo Registrado!';
+                    color = 'blue';
+                    detalles = `
+                        <p class="text-gray-700 mb-1"><strong>Nombre:</strong> ${datos.nombre}</p>
+                        <p class="text-gray-700 mb-1"><strong>DNI:</strong> ${datos.dni}</p>
+                        <p class="text-gray-700 mb-1"><strong>Artículo:</strong> ${datos.nombreArticulo} #${datos.numeroUnidad}</p>
+                        <p class="text-gray-600 text-sm mt-2"><strong>Registrado por:</strong> ${usuarioActual}</p>
+                        ${!datos.esMiembro ? `<p class="text-yellow-700 font-semibold mt-2">💰 Pagado: S/ ${datos.monto} (${datos.metodoPago})</p>` : ''}
+                    `;
+                } else if (tipo === 'venta') {
+                    icono = '✅';
+                    titulo = '¡Venta Registrada!';
+                    color = 'green';
+                    detalles = `
+                        <p class="text-gray-700 mb-1"><strong>Nombre:</strong> ${datos.nombre}</p>
+                        <p class="text-gray-700 mb-1"><strong>DNI:</strong> ${datos.dni}</p>
+                        <p class="text-gray-700 mb-1"><strong>Artículo:</strong> ${datos.cantidad}x ${datos.nombreArticulo}</p>
+                        <p class="text-gray-600 text-sm mt-2"><strong>Registrado por:</strong> ${usuarioActual}</p>
+                        <p class="text-green-700 font-semibold mt-2">💰 Total: S/ ${datos.montoTotal.toFixed(2)} (${datos.metodoPago})</p>
+                    `;
+                } else if (tipo === 'devolucion') {
+                    const tieneSancion = datos.sancion && datos.sancion > 0;
+                    icono = tieneSancion ? '⚠️' : '✅';
+                    titulo = tieneSancion ? '¡Devuelto con Sanción!' : '¡Artículo Devuelto!';
+                    color = tieneSancion ? 'orange' : 'blue';
+                    detalles = `
+                        <p class="text-gray-700 mb-1"><strong>Nombre:</strong> ${datos.nombre}</p>
+                        <p class="text-gray-700 mb-1"><strong>DNI:</strong> ${datos.dni}</p>
+                        <p class="text-gray-700 mb-1"><strong>Artículo:</strong> ${datos.nombreArticulo} #${datos.numeroUnidad}</p>
+                        <p class="text-gray-600 text-sm mt-2"><strong>Devuelto por:</strong> ${usuarioActual}</p>
+                        ${datos.tardanza ? `<p class="text-red-600 font-semibold mt-2">⏰ Tardanza: S/ 5.00</p>` : ''}
+                        ${datos.estadoOk === false ? `<p class="text-red-600 font-semibold">🚫 Mal estado: S/ 5.00</p>` : ''}
+                        ${tieneSancion ? `<p class="text-orange-700 font-bold mt-2">💰 Total cobrado: S/ ${datos.sancion} (${datos.metodoPago})</p>` : ''}
+                    `;
+                }
+                
+                overlay.innerHTML = `
+                    <div class="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl animate-slideUp" style="animation: slideUp 0.3s ease-out;">
+                        <div class="text-center">
+                            <div class="text-6xl mb-4">${icono}</div>
+                            <h2 class="text-2xl font-bold text-gray-800 mb-4">${titulo}</h2>
+                            <div class="bg-gray-50 rounded-lg p-4 mb-6 text-left">
+                                ${detalles}
+                            </div>
+                            <button 
+                                onclick="this.closest('.fixed').remove(); app.view='dashboard'; app.renderContent();"
+                                class="w-full bg-${color}-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-${color}-700 transition-colors"
+                            >
+                                Continuar
+                            </button>
+                        </div>
+                    </div>
+                `;
+                
+                document.body.appendChild(overlay);
+                
+                // Auto-cerrar después de 5 segundos
+                setTimeout(() => {
+                    if (overlay.parentNode) {
+                        overlay.remove();
+                        this.view = 'dashboard';
+                        this.renderContent();
+                    }
+                }, 5000);
+            }
+
+            async exportarExcel() {
+                try {
+                    // Obtener todos los préstamos
+                    const prestamosSnapshot = await db.collection('prestamos').get();
+                    const todosPrestamos = prestamosSnapshot.docs.map(doc => doc.data());
+
+                    // Obtener todas las ventas
+                    const ventasSnapshot = await db.collection('ventas').get();
+                    const todasVentas = ventasSnapshot.docs.map(doc => doc.data());
+
+                    // Crear libro de Excel
+                    const wb = XLSX.utils.book_new();
+
+                    // Hoja de préstamos
+                    const wsPrestamos = XLSX.utils.json_to_sheet(todosPrestamos.map(p => ({
+                        'Fecha': new Date(p.fechaHora).toLocaleString('es-PE'),
+                        'DNI': p.dni,
+                        'Nombre': p.nombre,
+                        'Teléfono': p.telefono || '',
+                        'Ciclo': p.ciclo || '',
+                        'Artículo': p.nombreArticulo,
+                        'Número': p.numeroUnidad || '',
+                        'Es Miembro': p.esMiembro ? 'Sí' : 'No',
+                        'Monto': p.monto || 0,
+                        'Método Pago': p.metodoPago || '',
+                        'Devuelto': p.devuelto ? 'Sí' : 'No',
+                        'Tardanza': p.tardanza ? 'Sí' : 'No',
+                        'Fecha Devolución': p.fechaDevolucion ? new Date(p.fechaDevolucion).toLocaleString('es-PE') : ''
+                    })));
+                    XLSX.utils.book_append_sheet(wb, wsPrestamos, 'Préstamos');
+
+                    // Hoja de ventas
+                    const wsVentas = XLSX.utils.json_to_sheet(todasVentas.map(v => ({
+                        'Fecha': new Date(v.fecha).toLocaleString('es-PE'),
+                        'DNI': v.dni,
+                        'Nombre': v.nombre,
+                        'Teléfono': v.telefono || '',
+                        'Ciclo': v.ciclo || '',
+                        'Artículo': v.nombreArticulo,
+                        'Cantidad': v.cantidad,
+                        'Es Miembro': v.esMiembro ? 'Sí' : 'No',
+                        'Monto Total': v.montoTotal,
+                        'Método Pago': v.metodoPago
+                    })));
+                    XLSX.utils.book_append_sheet(wb, wsVentas, 'Ventas');
+
+                    // Descargar
+                    XLSX.writeFile(wb, `Reporte_${new Date().toISOString().split('T')[0]}.xlsx`);
+                } catch (error) {
+                    console.error('Error exportando:', error);
+                    alert('Error al exportar datos');
+                }
+            }
+
+            render() {
+                const root = document.getElementById('root');
+                
+                if (this.view === 'login') {
+                    root.innerHTML = this.renderLogin();
+                    this.attachLoginEvents();
+                } else {
+                    root.innerHTML = this.renderMain();
+                    this.attachMainEvents();
+                }
+            }
+
+            renderLogin() {
+                return `
+                    <div class="min-h-screen bg-gradient-to-br from-blue-600 to-indigo-800 flex items-center justify-center p-4">
+                        <div class="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+                            <div class="text-center mb-8">
+                                <h1 class="text-3xl font-bold text-gray-800 mb-2">Sistema CEVEZ</h1>
+                                <p class="text-gray-600">Préstamos y Ventas</p>
+                            </div>
+                            <form id="loginForm" class="space-y-6">
+                                <div>
+                                    <label class="block text-sm font-semibold text-gray-700 mb-2">Usuario</label>
+                                    <input 
+                                        type="text" 
+                                        id="username" 
+                                        class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                        placeholder="Tu nombre de usuario"
+                                        required
+                                    />
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-semibold text-gray-700 mb-2">Contraseña</label>
+                                    <input 
+                                        type="password" 
+                                        id="password" 
+                                        class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                        placeholder="Tu contraseña"
+                                        required
+                                    />
+                                </div>
+                                <button 
+                                    type="submit"
+                                    class="w-full bg-blue-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-blue-700 transition-colors shadow-lg"
+                                >
+                                    Iniciar Sesión
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderMain() {
+                return `
+                    <div class="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+                        <!-- Header -->
+                        <div class="bg-white shadow-md">
+                            <div class="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
+                                <div>
+                                    <h1 class="text-2xl font-bold text-gray-800">Sistema CEVEZ</h1>
+                                    <p class="text-sm text-gray-600">Usuario: ${this.currentUser?.email?.split('@')[0] || ''}</p>
+                                </div>
+                                <div class="flex gap-2">
+                                    <button 
+                                        id="cambiarPassBtn"
+                                        class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors text-sm"
+                                    >
+                                        Cambiar Contraseña
+                                    </button>
+                                    <button 
+                                        id="logoutBtn"
+                                        class="bg-red-500 text-white px-6 py-2 rounded-lg hover:bg-red-600 transition-colors"
+                                    >
+                                        Cerrar Sesión
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="max-w-7xl mx-auto p-4">
+                            <!-- Navigation -->
+                            <div class="flex gap-2 mb-6 overflow-x-auto pb-2">
+                                <button data-view="dashboard" class="view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap">Dashboard</button>
+                                <button data-view="prestamo" class="view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap">Nuevo Préstamo</button>
+                                <button data-view="venta" class="view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap">Nueva Venta</button>
+                                <button data-view="devolver" class="view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap">Devolver</button>
+                                <button data-view="historial" class="view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap">Historial</button>
+                                <button data-view="inventario" class="view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap">Inventario</button>
+                                <button data-view="miembros" class="view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap">Miembros</button>
+                                <button id="exportarBtn" class="px-4 py-2 rounded-lg font-semibold whitespace-nowrap bg-green-600 text-white hover:bg-green-700">Exportar Excel</button>
+                            </div>
+
+                            <!-- Content -->
+                            <div id="mainContent"></div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            attachLoginEvents() {
+                document.getElementById('loginForm').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    const username = document.getElementById('username').value;
+                    const password = document.getElementById('password').value;
+                    this.login(username, password);
+                });
+            }
+
+            attachMainEvents() {
+                document.getElementById('logoutBtn').addEventListener('click', () => this.logout());
+                document.getElementById('cambiarPassBtn').addEventListener('click', () => this.mostrarCambiarContrasena());
+                document.getElementById('exportarBtn').addEventListener('click', () => this.exportarExcel());
+                
+                document.querySelectorAll('.view-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        this.view = e.target.dataset.view;
+                        this.renderContent();
+                    });
+                });
+
+                this.renderContent();
+            }
+
+            mostrarCambiarContrasena() {
+                const nuevaPass = prompt('Ingresa tu nueva contraseña (mínimo 6 caracteres):');
+                if (nuevaPass) {
+                    if (nuevaPass.length < 6) {
+                        alert('La contraseña debe tener al menos 6 caracteres');
+                        return;
+                    }
+                    const confirmar = prompt('Confirma tu nueva contraseña:');
+                    if (nuevaPass === confirmar) {
+                        this.cambiarContrasena(nuevaPass);
+                    } else {
+                        alert('Las contraseñas no coinciden');
+                    }
+                }
+            }
+
+            renderContent() {
+                const content = document.getElementById('mainContent');
+                
+                // Actualizar botones activos
+                document.querySelectorAll('.view-btn').forEach(btn => {
+                    if (btn.dataset.view === this.view) {
+                        btn.className = 'view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap bg-blue-600 text-white shadow-lg';
+                    } else {
+                        btn.className = 'view-btn px-4 py-2 rounded-lg font-semibold whitespace-nowrap bg-white text-gray-700 hover:bg-gray-50';
+                    }
+                });
+
+                switch(this.view) {
+                    case 'dashboard':
+                        content.innerHTML = this.renderDashboard();
+                        break;
+                    case 'prestamo':
+                        content.innerHTML = this.renderFormPrestamo();
+                        this.attachFormPrestamoEvents();
+                        break;
+                    case 'venta':
+                        content.innerHTML = this.renderFormVenta();
+                        this.attachFormVentaEvents();
+                        break;
+                    case 'devolver':
+                        content.innerHTML = this.renderDevolver();
+                        this.attachDevolverEvents();
+                        break;
+                    case 'historial':
+                        content.innerHTML = this.renderHistorial();
+                        this.attachHistorialEvents();
+                        break;
+                    case 'inventario':
+                        content.innerHTML = this.renderInventario();
+                        break;
+                    case 'miembros':
+                        content.innerHTML = this.renderMiembros();
+                        break;
+                    case 'admin':
+                        if (this.esAdminDedicado) {
+                            content.innerHTML = this.renderAdmin();
+                            this.attachAdminEvents();
+                        } else {
+                            this.view = 'dashboard';
+                            this.renderContent();
+                        }
+                        break;
+                    case 'admin-miembros':
+                        if (this.esAdminDedicado) {
+                            content.innerHTML = this.renderAdminMiembros();
+                        } else {
+                            this.view = 'dashboard';
+                            this.renderContent();
+                        }
+                        break;
+                    case 'admin-inventario':
+                        if (this.esAdminDedicado) {
+                            content.innerHTML = this.renderAdminInventario();
+                            this.attachAdminInventarioEvents();
+                        } else {
+                            this.view = 'dashboard';
+                            this.renderContent();
+                        }
+                        break;
+                    case 'admin-limpiar':
+                        if (this.esAdminDedicado) {
+                            content.innerHTML = this.renderAdminLimpiar();
+                            this.attachAdminLimpiarEvents();
+                        } else {
+                            this.view = 'dashboard';
+                            this.renderContent();
+                        }
+                        break;
+                }
+            }
+
+            renderDashboard() {
+                const prestamosActivos = this.prestamos.length;
+                const ventasHoy = this.ventas.length;
+                
+                // Calcular ingresos de HOY incluyendo sanciones
+                const ingresosVentas = (this.ventas || []).reduce((sum, v) => sum + (v.montoTotal || 0), 0);
+                const ingresosPrestamosNoMiembros = (this.prestamosHoy || []).filter(p => !p.esMiembro).reduce((sum, p) => sum + (p.monto || 0), 0);
+                const ingresosSanciones = (this.prestamosDevueltosHoy || []).reduce((sum, p) => sum + (p.sancion || 0), 0);
+                const ingresosHoy = ingresosVentas + ingresosPrestamosNoMiembros + ingresosSanciones;
+                
+                console.log('Debug Ingresos:', {
+                    ventas: this.ventas.length,
+                    ingresosVentas,
+                    prestamosHoy: (this.prestamosHoy || []).length,
+                    ingresosPrestamosNoMiembros,
+                    prestamosDevueltosHoy: (this.prestamosDevueltosHoy || []).length,
+                    ingresosSanciones,
+                    total: ingresosHoy
+                });
+
+                const alertas = this.prestamos.filter(p => {
+                    const ahora = new Date();
+                    const limite = new Date(p.limiteDevolucion);
+                    return ahora > limite;
+                });
+
+                return `
+                    <div class="space-y-6">
+                        <!-- Stats -->
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                            <div class="bg-white rounded-xl p-6 shadow-md">
+                                <p class="text-gray-600 mb-2">Préstamos Activos</p>
+                                <p class="text-4xl font-bold text-blue-600">${prestamosActivos}</p>
+                            </div>
+                            <div class="bg-white rounded-xl p-6 shadow-md">
+                                <p class="text-gray-600 mb-2">Ventas Hoy</p>
+                                <p class="text-4xl font-bold text-green-600">${ventasHoy}</p>
+                            </div>
+                            <div class="bg-white rounded-xl p-6 shadow-md">
+                                <p class="text-gray-600 mb-2">Ingresos Hoy</p>
+                                <p class="text-4xl font-bold text-yellow-600">S/ ${ingresosHoy.toFixed(2)}</p>
+                            </div>
+                            <div class="bg-white rounded-xl p-6 shadow-md">
+                                <p class="text-gray-600 mb-2">Con Tardanza</p>
+                                <p class="text-4xl font-bold ${alertas.length > 0 ? 'text-red-600' : 'text-gray-400'}">${alertas.length}</p>
+                            </div>
+                        </div>
+
+                        ${alertas.length > 0 ? `
+                        <div class="bg-red-50 border-2 border-red-200 rounded-xl p-6">
+                            <div class="flex items-center gap-2 mb-4">
+                                <span class="text-2xl">⚠️</span>
+                                <h2 class="text-xl font-bold text-red-800">Artículos con Tardanza (${alertas.length})</h2>
+                            </div>
+                            <div class="space-y-3">
+                                ${alertas.map(p => `
+                                    <div class="bg-white rounded-lg p-4 border-l-4 border-red-500">
+                                        <div class="flex justify-between items-start">
+                                            <div>
+                                                <p class="font-semibold text-gray-800">${p.nombre}</p>
+                                                <p class="text-sm text-gray-600">DNI: ${p.dni} | Tel: ${p.telefono}</p>
+                                                <p class="text-sm text-red-600 font-medium mt-1">
+                                                    ${p.nombreArticulo} #${p.numeroUnidad}
+                                                </p>
+                                                <p class="text-xs text-gray-500 mt-1">
+                                                    Límite: ${new Date(p.limiteDevolucion).toLocaleString('es-PE')}
+                                                </p>
+                                            </div>
+                                            <button 
+                                                onclick="app.view='devolver'; app.renderContent();"
+                                                class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-green-700 whitespace-nowrap"
+                                            >
+                                                Devolver
+                                            </button>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                        ` : ''}
+
+                        <!-- Inventario bajo -->
+                        <div class="bg-white rounded-xl p-6 shadow-md">
+                            <h2 class="text-xl font-bold text-gray-800 mb-4">Estado del Inventario</h2>
+                            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                ${this.inventario.map(item => {
+                                    if (item.tipo === 'prestamo') {
+                                        const disponibles = item.unidades.filter(u => u.disponible).length;
+                                        return `
+                                            <div class="bg-blue-50 rounded-lg p-4">
+                                                <p class="text-sm text-gray-600">${item.nombre}</p>
+                                                <p class="text-2xl font-bold text-blue-600">${disponibles}/${item.cantidad}</p>
+                                            </div>
+                                        `;
+                                    } else {
+                                        const bajo = item.stock <= item.alertaMinimo;
+                                        return `
+                                            <div class="bg-${bajo ? 'red' : 'green'}-50 rounded-lg p-4">
+                                                <p class="text-sm text-gray-600">${item.nombre}</p>
+                                                <p class="text-2xl font-bold text-${bajo ? 'red' : 'green'}-600">${item.stock}</p>
+                                                ${bajo ? '<p class="text-xs text-red-600 mt-1">⚠️ Stock bajo</p>' : ''}
+                                            </div>
+                                        `;
+                                    }
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderFormPrestamo() {
+                const articulosPrestamo = this.inventario.filter(a => a.tipo === 'prestamo');
+                
+                return `
+                    <div class="bg-white rounded-xl p-6 shadow-md max-w-2xl mx-auto">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-6">Nuevo Préstamo</h2>
+                        <form id="formPrestamo" class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">DNI</label>
+                                <input type="text" id="dniPrestamo" maxlength="8" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Nombre</label>
+                                <input type="text" id="nombrePrestamo" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Teléfono</label>
+                                <input type="text" id="telefonoPrestamo" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Ciclo</label>
+                                <input type="text" id="cicloPrestamo" placeholder="1ero, 2do, 3ero..." class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">¿Es miembro?</label>
+                                <div class="flex gap-4">
+                                    <button type="button" data-miembro="true" class="miembro-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100">Sí</button>
+                                    <button type="button" data-miembro="false" class="miembro-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100">No</button>
+                                </div>
+                                <input type="hidden" id="esMiembroPrestamo" value="true" />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Artículo</label>
+                                <select id="articuloPrestamo" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required>
+                                    <option value="">Selecciona...</option>
+                                    ${articulosPrestamo.map(a => {
+                                        const disponibles = a.unidades.filter(u => u.disponible).length;
+                                        return `<option value="${a.id}" ${disponibles === 0 ? 'disabled' : ''}>${a.nombre} (${disponibles} disponibles)</option>`;
+                                    }).join('')}
+                                </select>
+                            </div>
+                            <div id="unidadesContainer" class="hidden">
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Número de Unidad</label>
+                                <select id="unidadPrestamo" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none">
+                                    <option value="">Selecciona...</option>
+                                </select>
+                            </div>
+                            <div id="pagoContainer" class="hidden">
+                                <div class="bg-yellow-50 border-2 border-yellow-200 rounded-lg p-4 mb-4">
+                                    <p class="text-yellow-800 font-semibold">Costo: S/ 3.00 (máximo 5 horas)</p>
+                                </div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Método de Pago</label>
+                                <div class="flex gap-4">
+                                    <button type="button" data-pago="efectivo" class="pago-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100">Efectivo</button>
+                                    <button type="button" data-pago="plin" class="pago-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100">Plin</button>
+                                </div>
+                                <input type="hidden" id="metodoPagoPrestamo" value="efectivo" />
+                            </div>
+                            <button type="submit" class="w-full bg-blue-600 text-white py-4 rounded-lg font-bold text-lg hover:bg-blue-700">
+                                Registrar Préstamo
+                            </button>
+                        </form>
+                    </div>
+                `;
+            }
+
+            attachFormPrestamoEvents() {
+                const dniInput = document.getElementById('dniPrestamo');
+                const nombreInput = document.getElementById('nombrePrestamo');
+                const telefonoInput = document.getElementById('telefonoPrestamo');
+                const cicloInput = document.getElementById('cicloPrestamo');
+                const esMiembroInput = document.getElementById('esMiembroPrestamo');
+                const articuloSelect = document.getElementById('articuloPrestamo');
+                const unidadSelect = document.getElementById('unidadPrestamo');
+                const unidadesContainer = document.getElementById('unidadesContainer');
+                const pagoContainer = document.getElementById('pagoContainer');
+
+                // Autocompletar con DNI
+                dniInput.addEventListener('input', () => {
+                    const dni = dniInput.value;
+                    const miembro = this.miembros.find(m => m.dni === dni);
+                    if (miembro) {
+                        nombreInput.value = miembro.nombre;
+                        telefonoInput.value = miembro.telefono || '';
+                        cicloInput.value = miembro.ciclo || '';
+                        esMiembroInput.value = 'true';
+                        document.querySelectorAll('.miembro-btn').forEach(btn => {
+                            btn.className = btn.dataset.miembro === 'true' 
+                                ? 'miembro-btn flex-1 py-3 rounded-lg font-semibold bg-green-600 text-white shadow-lg'
+                                : 'miembro-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100';
+                        });
+                        pagoContainer.classList.add('hidden');
+                    }
+                });
+
+                // Botones de miembro
+                document.querySelectorAll('.miembro-btn').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const esMiembro = btn.dataset.miembro === 'true';
+                        esMiembroInput.value = esMiembro;
+                        document.querySelectorAll('.miembro-btn').forEach(b => {
+                            b.className = b === btn 
+                                ? 'miembro-btn flex-1 py-3 rounded-lg font-semibold bg-green-600 text-white shadow-lg'
+                                : 'miembro-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100';
+                        });
+                        pagoContainer.classList.toggle('hidden', esMiembro);
+                    });
+                });
+
+                // Botones de pago
+                document.querySelectorAll('.pago-btn').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        document.getElementById('metodoPagoPrestamo').value = btn.dataset.pago;
+                        document.querySelectorAll('.pago-btn').forEach(b => {
+                            b.className = b === btn 
+                                ? 'pago-btn flex-1 py-3 rounded-lg font-semibold bg-purple-600 text-white shadow-lg'
+                                : 'pago-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100';
+                        });
+                    });
+                });
+
+                // Cambio de artículo
+                articuloSelect.addEventListener('change', () => {
+                    const articuloId = articuloSelect.value;
+                    const articulo = this.inventario.find(a => a.id === articuloId);
+                    
+                    if (articulo) {
+                        const unidadesDisponibles = articulo.unidades.filter(u => u.disponible);
+                        unidadSelect.innerHTML = '<option value="">Selecciona...</option>' +
+                            unidadesDisponibles.map(u => 
+                                `<option value="${u.numero}">#${u.numero}${u.talla ? ` - Talla ${u.talla}` : ''}</option>`
+                            ).join('');
+                        unidadesContainer.classList.remove('hidden');
+                    } else {
+                        unidadesContainer.classList.add('hidden');
+                    }
+                });
+
+                // Submit
+                document.getElementById('formPrestamo').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    const articulo = this.inventario.find(a => a.id === articuloSelect.value);
+                    const esMiembro = esMiembroInput.value === 'true';
+                    
+                    this.registrarPrestamo({
+                        dni: dniInput.value,
+                        nombre: nombreInput.value,
+                        telefono: telefonoInput.value,
+                        ciclo: cicloInput.value,
+                        esMiembro,
+                        articuloId: articuloSelect.value,
+                        nombreArticulo: articulo.nombre,
+                        numeroUnidad: parseInt(unidadSelect.value),
+                        monto: esMiembro ? 0 : 3,
+                        metodoPago: esMiembro ? '' : document.getElementById('metodoPagoPrestamo').value
+                    });
+                });
+            }
+
+            renderFormVenta() {
+                const articulosVenta = this.inventario.filter(a => a.tipo === 'venta' && a.stock > 0);
+                
+                return `
+                    <div class="bg-white rounded-xl p-6 shadow-md max-w-2xl mx-auto">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-6">Nueva Venta</h2>
+                        <form id="formVenta" class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">DNI</label>
+                                <input type="text" id="dniVenta" maxlength="8" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Nombre</label>
+                                <input type="text" id="nombreVenta" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Teléfono</label>
+                                <input type="text" id="telefonoVenta" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Ciclo</label>
+                                <input type="text" id="cicloVenta" placeholder="1ero, 2do, 3ero..." class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Artículo</label>
+                                <select id="articuloVenta" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required>
+                                    <option value="">Selecciona...</option>
+                                    ${articulosVenta.map(a => 
+                                        `<option value="${a.id}">${a.nombre} (Stock: ${a.stock})</option>`
+                                    ).join('')}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Cantidad</label>
+                                <input type="number" id="cantidadVenta" min="1" class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" required />
+                            </div>
+                            <div id="precioInfo" class="bg-blue-50 border-2 border-blue-200 rounded-lg p-4 hidden">
+                                <p id="precioTexto" class="text-blue-800 font-semibold"></p>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-gray-700 mb-2">Método de Pago</label>
+                                <div class="flex gap-4">
+                                    <button type="button" data-pago="efectivo" class="pago-venta-btn flex-1 py-3 rounded-lg font-semibold bg-green-600 text-white shadow-lg">Efectivo</button>
+                                    <button type="button" data-pago="plin" class="pago-venta-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100">Plin</button>
+                                </div>
+                                <input type="hidden" id="metodoPagoVenta" value="efectivo" />
+                            </div>
+                            <button type="submit" class="w-full bg-green-600 text-white py-4 rounded-lg font-bold text-lg hover:bg-green-700">
+                                Registrar Venta
+                            </button>
+                        </form>
+                    </div>
+                `;
+            }
+
+            attachFormVentaEvents() {
+                const dniInput = document.getElementById('dniVenta');
+                const nombreInput = document.getElementById('nombreVenta');
+                const telefonoInput = document.getElementById('telefonoVenta');
+                const cicloInput = document.getElementById('cicloVenta');
+                const articuloSelect = document.getElementById('articuloVenta');
+                const cantidadInput = document.getElementById('cantidadVenta');
+                const precioInfo = document.getElementById('precioInfo');
+                const precioTexto = document.getElementById('precioTexto');
+
+                let esMiembro = false;
+
+                // Autocompletar con DNI
+                dniInput.addEventListener('input', () => {
+                    const dni = dniInput.value;
+                    const miembro = this.miembros.find(m => m.dni === dni);
+                    if (miembro) {
+                        nombreInput.value = miembro.nombre;
+                        telefonoInput.value = miembro.telefono || '';
+                        cicloInput.value = miembro.ciclo || '';
+                        esMiembro = true;
+                    } else {
+                        esMiembro = false;
+                    }
+                    actualizarPrecio();
+                });
+
+                const actualizarPrecio = () => {
+                    const articuloId = articuloSelect.value;
+                    const cantidad = parseInt(cantidadInput.value) || 0;
+                    const articulo = this.inventario.find(a => a.id === articuloId);
+
+                    if (articulo && cantidad > 0) {
+                        let precioUnitario;
+                        if (articulo.precioDiferenciado) {
+                            precioUnitario = esMiembro ? articulo.precioMiembro : articulo.precioNoMiembro;
+                            precioTexto.innerHTML = `Precio ${esMiembro ? 'Miembro' : 'No-Miembro'}: S/ ${precioUnitario} x ${cantidad} = <strong>S/ ${(precioUnitario * cantidad).toFixed(2)}</strong>`;
+                        } else {
+                            precioUnitario = articulo.precio;
+                            precioTexto.innerHTML = `Precio: S/ ${precioUnitario} x ${cantidad} = <strong>S/ ${(precioUnitario * cantidad).toFixed(2)}</strong>`;
+                        }
+                        precioInfo.classList.remove('hidden');
+                    } else {
+                        precioInfo.classList.add('hidden');
+                    }
+                };
+
+                articuloSelect.addEventListener('change', actualizarPrecio);
+                cantidadInput.addEventListener('input', actualizarPrecio);
+
+                // Botones de pago
+                document.querySelectorAll('.pago-venta-btn').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        document.getElementById('metodoPagoVenta').value = btn.dataset.pago;
+                        document.querySelectorAll('.pago-venta-btn').forEach(b => {
+                            b.className = b === btn 
+                                ? 'pago-venta-btn flex-1 py-3 rounded-lg font-semibold bg-purple-600 text-white shadow-lg'
+                                : 'pago-venta-btn flex-1 py-3 rounded-lg font-semibold bg-gray-100';
+                        });
+                    });
+                });
+
+                // Submit
+                document.getElementById('formVenta').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    const articulo = this.inventario.find(a => a.id === articuloSelect.value);
+                    const cantidad = parseInt(cantidadInput.value);
+                    
+                    if (cantidad > articulo.stock) {
+                        alert('No hay suficiente stock');
+                        return;
+                    }
+
+                    let precioUnitario;
+                    if (articulo.precioDiferenciado) {
+                        precioUnitario = esMiembro ? articulo.precioMiembro : articulo.precioNoMiembro;
+                    } else {
+                        precioUnitario = articulo.precio;
+                    }
+
+                    this.registrarVenta({
+                        dni: dniInput.value,
+                        nombre: nombreInput.value,
+                        telefono: telefonoInput.value,
+                        ciclo: cicloInput.value,
+                        esMiembro,
+                        articuloId: articuloSelect.value,
+                        nombreArticulo: articulo.nombre,
+                        cantidad,
+                        precioUnitario,
+                        montoTotal: precioUnitario * cantidad,
+                        metodoPago: document.getElementById('metodoPagoVenta').value
+                    });
+                });
+            }
+
+            renderDevolver() {
+                return `
+                    <div class="bg-white rounded-xl p-6 shadow-md max-w-4xl mx-auto">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-6">Devolver Artículos</h2>
+                        <input 
+                            type="text" 
+                            id="busquedaDevolucion"
+                            placeholder="Buscar por DNI o nombre..."
+                            class="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none mb-6"
+                        />
+                        <div id="listaPrestamos" class="space-y-3">
+                            ${this.prestamos.length === 0 ? '<p class="text-gray-500 text-center py-8">No hay préstamos activos</p>' : 
+                                this.prestamos.map(p => {
+                                    const ahora = new Date();
+                                    const limite = new Date(p.limiteDevolucion);
+                                    const pasadoLimite = ahora > limite;
+                                    
+                                    return `
+                                        <div class="rounded-lg p-4 border-2 ${pasadoLimite ? 'bg-red-50 border-red-300' : 'bg-gray-50 border-gray-300'}" data-prestamo="${p.id}" data-dni="${p.dni}" data-nombre="${p.nombre.toLowerCase()}">
+                                            <div class="flex justify-between items-start mb-3">
+                                                <div>
+                                                    <p class="font-bold text-lg">${p.nombre}</p>
+                                                    <p class="text-sm text-gray-600">DNI: ${p.dni} | Tel: ${p.telefono}</p>
+                                                    <p class="text-sm font-medium text-gray-700 mt-1">${p.nombreArticulo} #${p.numeroUnidad}</p>
+                                                </div>
+                                                <span class="px-3 py-1 rounded-full text-xs font-semibold ${p.esMiembro ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}">
+                                                    ${p.esMiembro ? 'Miembro' : 'S/ 3.00'}
+                                                </span>
+                                            </div>
+                                            <p class="text-sm text-gray-600 mb-3">
+                                                Prestado: ${new Date(p.fechaHora).toLocaleString('es-PE')}
+                                            </p>
+                                            ${p.usuarioRegistro ? `<p class="text-xs text-blue-600 mb-2">📝 Registrado por: ${p.usuarioRegistro.split('@')[0]}</p>` : ''}
+                                            ${pasadoLimite ? '<div class="bg-red-100 border border-red-300 rounded p-2 mb-3"><p class="text-red-800 font-semibold text-sm">⚠️ Pasó el límite de 5 horas</p></div>' : ''}
+                                            <button 
+                                                onclick="app.confirmarDevolucion('${p.id}')"
+                                                class="w-full bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700"
+                                            >
+                                                Marcar como Devuelto
+                                            </button>
+                                        </div>
+                                    `;
+                                }).join('')
+                            }
+                        </div>
+                    </div>
+                `;
+            }
+
+            confirmarDevolucion(prestamoId) {
+                const prestamo = this.prestamos.find(p => p.id === prestamoId);
+                if (!prestamo) return;
+
+                const ahora = new Date();
+                const limite = new Date(prestamo.limiteDevolucion);
+                const tiempoExtra = Math.max(0, (ahora - limite) / (1000 * 60)); // minutos de tardanza
+                const tieneTardanza = tiempoExtra > 15; // Tolerancia de 15 minutos
+
+                const esBata = prestamo.nombreArticulo.toLowerCase().includes('bata');
+
+                const overlay = document.createElement('div');
+                overlay.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+                overlay.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 9999; overflow-y: auto;';
+                
+                let sancionTardanza = tieneTardanza ? 5 : 0;
+                
+                overlay.innerHTML = `
+                    <div class="bg-white rounded-2xl p-6 max-w-md w-full mx-4 shadow-2xl my-4">
+                        <div class="text-center mb-4">
+                            <div class="text-5xl mb-3">📦</div>
+                            <h2 class="text-2xl font-bold text-gray-800">Confirmar Devolución</h2>
+                        </div>
+                        
+                        <div class="bg-gray-50 rounded-lg p-4 mb-4 text-left">
+                            <p class="text-gray-700 mb-1"><strong>Persona:</strong> ${prestamo.nombre}</p>
+                            <p class="text-gray-700 mb-1"><strong>Artículo:</strong> ${prestamo.nombreArticulo} #${prestamo.numeroUnidad}</p>
+                            <p class="text-gray-700"><strong>Prestado:</strong> ${new Date(prestamo.fechaHora).toLocaleString('es-PE')}</p>
+                        </div>
+
+                        ${tieneTardanza ? `
+                            <div class="bg-red-100 border-2 border-red-300 rounded-lg p-3 mb-4">
+                                <p class="text-red-800 font-semibold text-sm">⚠️ TARDANZA: ${Math.floor(tiempoExtra)} minutos</p>
+                                <p class="text-red-700 text-sm">Sanción automática: S/ 5.00</p>
+                            </div>
+                        ` : ''}
+
+                        <div class="mb-4">
+                            <p class="font-semibold text-gray-800 mb-2">${esBata ? '¿Se entregó limpia?' : '¿Se entregó en buenas condiciones?'}</p>
+                            <div class="flex gap-3">
+                                <button onclick="document.getElementById('estadoOk').value='si'" class="estado-btn flex-1 py-2 rounded-lg font-semibold bg-green-600 text-white" data-estado="si">
+                                    Sí
+                                </button>
+                                <button onclick="document.getElementById('estadoOk').value='no'" class="estado-btn flex-1 py-2 rounded-lg font-semibold bg-gray-200 text-gray-800" data-estado="no">
+                                    No
+                                </button>
+                            </div>
+                            <input type="hidden" id="estadoOk" value="si" />
+                        </div>
+
+                        <div id="sancionEstado" class="bg-yellow-100 border-2 border-yellow-300 rounded-lg p-3 mb-4 hidden">
+                            <p class="text-yellow-800 font-semibold text-sm">⚠️ Sanción por ${esBata ? 'suciedad' : 'mal estado'}: S/ 5.00</p>
+                        </div>
+
+                        <div id="totalSancion" class="bg-gray-100 rounded-lg p-3 mb-4">
+                            <p class="text-gray-800 font-bold">Total a cobrar: S/ <span id="montoTotal">${sancionTardanza}</span></p>
+                        </div>
+
+                        <div id="metodoPagoDiv" class="${sancionTardanza > 0 ? '' : 'hidden'} mb-4">
+                            <p class="font-semibold text-gray-800 mb-2">Método de pago:</p>
+                            <div class="flex gap-3">
+                                <button onclick="document.getElementById('metodoPagoSancion').value='efectivo'" class="pago-sancion-btn flex-1 py-2 rounded-lg font-semibold bg-green-600 text-white" data-pago="efectivo">
+                                    Efectivo
+                                </button>
+                                <button onclick="document.getElementById('metodoPagoSancion').value='plin'" class="pago-sancion-btn flex-1 py-2 rounded-lg font-semibold bg-gray-200 text-gray-800" data-pago="plin">
+                                    Plin
+                                </button>
+                            </div>
+                            <input type="hidden" id="metodoPagoSancion" value="efectivo" />
+                        </div>
+
+                        <div class="flex gap-3">
+                            <button 
+                                onclick="this.closest('.fixed').remove();"
+                                class="flex-1 bg-gray-300 text-gray-800 py-3 rounded-lg font-bold hover:bg-gray-400 transition-colors"
+                            >
+                                Cancelar
+                            </button>
+                            <button 
+                                onclick="app.procesarDevolucion('${prestamoId}', ${tieneTardanza})"
+                                class="flex-1 bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700 transition-colors"
+                            >
+                                Confirmar
+                            </button>
+                        </div>
+                    </div>
+                `;
+                
+                document.body.appendChild(overlay);
+
+                // Event listeners para botones de estado
+                overlay.querySelectorAll('.estado-btn').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        const estado = this.dataset.estado;
+                        overlay.querySelectorAll('.estado-btn').forEach(b => {
+                            if (b.dataset.estado === estado) {
+                                b.className = 'estado-btn flex-1 py-2 rounded-lg font-semibold bg-green-600 text-white';
+                            } else {
+                                b.className = 'estado-btn flex-1 py-2 rounded-lg font-semibold bg-gray-200 text-gray-800';
+                            }
+                        });
+
+                        const sancionEstadoDiv = document.getElementById('sancionEstado');
+                        const sancionEstado = estado === 'no' ? 5 : 0;
+                        const totalSancion = sancionTardanza + sancionEstado;
+                        
+                        if (sancionEstado > 0) {
+                            sancionEstadoDiv.classList.remove('hidden');
+                        } else {
+                            sancionEstadoDiv.classList.add('hidden');
+                        }
+
+                        document.getElementById('montoTotal').textContent = totalSancion;
+                        
+                        const metodoPagoDiv = document.getElementById('metodoPagoDiv');
+                        if (totalSancion > 0) {
+                            metodoPagoDiv.classList.remove('hidden');
+                        } else {
+                            metodoPagoDiv.classList.add('hidden');
+                        }
+                    });
+                });
+
+                // Event listeners para botones de pago
+                overlay.querySelectorAll('.pago-sancion-btn').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        const pago = this.dataset.pago;
+                        overlay.querySelectorAll('.pago-sancion-btn').forEach(b => {
+                            if (b.dataset.pago === pago) {
+                                b.className = 'pago-sancion-btn flex-1 py-2 rounded-lg font-semibold bg-purple-600 text-white';
+                            } else {
+                                b.className = 'pago-sancion-btn flex-1 py-2 rounded-lg font-semibold bg-gray-200 text-gray-800';
+                            }
+                        });
+                    });
+                });
+            }
+
+            async procesarDevolucion(prestamoId, tieneTardanza) {
+                const prestamo = this.prestamos.find(p => p.id === prestamoId);
+                if (!prestamo) return;
+
+                const estadoOk = document.getElementById('estadoOk').value === 'si';
+                const sancionEstado = estadoOk ? 0 : 5;
+                const sancionTardanza = tieneTardanza ? 5 : 0;
+                const totalSancion = sancionTardanza + sancionEstado;
+                const metodoPago = totalSancion > 0 ? document.getElementById('metodoPagoSancion').value : '';
+
+                // Cerrar overlay
+                document.querySelectorAll('.fixed').forEach(el => el.remove());
+
+                await this.devolverPrestamo(prestamoId, {
+                    tardanza: tieneTardanza,
+                    estadoOk: estadoOk,
+                    sancion: totalSancion,
+                    metodoPago: metodoPago
+                });
+            }
+
+            attachDevolverEvents() {
+                const busqueda = document.getElementById('busquedaDevolucion');
+                busqueda.addEventListener('input', (e) => {
+                    const termino = e.target.value.toLowerCase();
+                    document.querySelectorAll('[data-prestamo]').forEach(elem => {
+                        const dni = elem.dataset.dni;
+                        const nombre = elem.dataset.nombre;
+                        if (dni.includes(termino) || nombre.includes(termino)) {
+                            elem.style.display = 'block';
+                        } else {
+                            elem.style.display = 'none';
+                        }
+                    });
+                });
+            }
+
+            renderInventario() {
+                return `
+                    <div class="bg-white rounded-xl p-6 shadow-md">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-6">Gestión de Inventario</h2>
+                        <div class="space-y-4">
+                            ${this.inventario.map(item => `
+                                <div class="border-2 border-gray-200 rounded-lg p-4">
+                                    <div class="flex justify-between items-start">
+                                        <div>
+                                            <h3 class="text-lg font-bold text-gray-800">${item.nombre}</h3>
+                                            <p class="text-sm text-gray-600">Tipo: ${item.tipo === 'prestamo' ? 'Préstamo' : 'Venta'}</p>
+                                            ${item.tipo === 'prestamo' ? 
+                                                `<p class="text-sm text-gray-600">Cantidad: ${item.cantidad} unidades</p>
+                                                <p class="text-sm text-gray-600">Disponibles: ${item.unidades.filter(u => u.disponible).length}</p>` :
+                                                `<p class="text-sm text-gray-600">Stock: ${item.stock} ${item.unidad || 'unidades'}</p>`
+                                            }
+                                            ${item.precioDiferenciado ?
+                                                `<p class="text-sm font-semibold text-green-700">Miembro: S/ ${item.precioMiembro} | No-Miembro: S/ ${item.precioNoMiembro}</p>` :
+                                                `<p class="text-sm font-semibold text-blue-700">Precio: S/ ${item.precio}</p>`
+                                            }
+                                        </div>
+                                        <span class="px-3 py-1 rounded-full text-xs font-semibold ${item.tipo === 'prestamo' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}">
+                                            ${item.tipo === 'prestamo' ? 'PRÉSTAMO' : 'VENTA'}
+                                        </span>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                        <p class="mt-6 text-sm text-gray-600 text-center">Para editar inventario, contacta al administrador del sistema</p>
+                    </div>
+                `;
+            }
+
+            renderMiembros() {
+                return `
+                    <div class="bg-white rounded-xl p-6 shadow-md">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-6">Base de Datos de Miembros</h2>
+                        <div class="overflow-x-auto">
+                            <table class="w-full">
+                                <thead>
+                                    <tr class="bg-gray-100">
+                                        <th class="px-4 py-2 text-left">DNI</th>
+                                        <th class="px-4 py-2 text-left">Nombre</th>
+                                        <th class="px-4 py-2 text-left">Teléfono</th>
+                                        <th class="px-4 py-2 text-left">Ciclo</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${this.miembros.map(m => `
+                                        <tr class="border-b">
+                                            <td class="px-4 py-2">${m.dni}</td>
+                                            <td class="px-4 py-2">${m.nombre}</td>
+                                            <td class="px-4 py-2">${m.telefono || '-'}</td>
+                                            <td class="px-4 py-2">${m.ciclo || '-'}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                        <p class="mt-6 text-sm text-gray-600 text-center">Total: ${this.miembros.length} miembros registrados</p>
+                    </div>
+                `;
+            }
+
+            renderHistorial() {
+                return `
+                    <div class="bg-white rounded-xl p-6 shadow-md">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-6">Historial de Operaciones</h2>
+                        
+                        <!-- Filtros -->
+                        <div class="flex flex-wrap gap-2 mb-6">
+                            <button data-filtro="hoy" class="filtro-btn px-4 py-2 rounded-lg font-semibold bg-blue-600 text-white">Hoy</button>
+                            <button data-filtro="semana" class="filtro-btn px-4 py-2 rounded-lg font-semibold bg-gray-100">Esta Semana</button>
+                            <button data-filtro="mes" class="filtro-btn px-4 py-2 rounded-lg font-semibold bg-gray-100">Este Mes</button>
+                            <button data-filtro="todo" class="filtro-btn px-4 py-2 rounded-lg font-semibold bg-gray-100">Todo</button>
+                        </div>
+
+                        <div id="historialContent" class="space-y-4">
+                            <p class="text-gray-500 text-center py-8">Cargando historial...</p>
+                        </div>
+                    </div>
+                `;
+            }
+
+            async attachHistorialEvents() {
+                let filtroActual = 'hoy';
+                
+                const cargarHistorial = async (filtro) => {
+                    filtroActual = filtro;
+                    
+                    // Actualizar botones activos
+                    document.querySelectorAll('.filtro-btn').forEach(btn => {
+                        if (btn.dataset.filtro === filtro) {
+                            btn.className = 'filtro-btn px-4 py-2 rounded-lg font-semibold bg-blue-600 text-white';
+                        } else {
+                            btn.className = 'filtro-btn px-4 py-2 rounded-lg font-semibold bg-gray-100 hover:bg-gray-200';
+                        }
+                    });
+
+                    const ahora = new Date();
+                    let fechaInicio;
+
+                    switch(filtro) {
+                        case 'hoy':
+                            fechaInicio = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+                            break;
+                        case 'semana':
+                            fechaInicio = new Date(ahora.getTime() - 7 * 24 * 60 * 60 * 1000);
+                            break;
+                        case 'mes':
+                            fechaInicio = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
+                            break;
+                        case 'todo':
+                            fechaInicio = new Date(2020, 0, 1);
+                            break;
+                    }
+
+                    try {
+                        // Cargar préstamos
+                        const prestamosQuery = filtro === 'todo' 
+                            ? db.collection('prestamos')
+                            : db.collection('prestamos').where('fechaHora', '>=', fechaInicio.toISOString());
+                        
+                        const prestamosSnapshot = await prestamosQuery.get();
+                        const prestamos = prestamosSnapshot.docs.map(doc => ({
+                            id: doc.id,
+                            tipo: 'prestamo',
+                            ...doc.data()
+                        }));
+
+                        // Cargar ventas
+                        const ventasQuery = filtro === 'todo'
+                            ? db.collection('ventas')
+                            : db.collection('ventas').where('fecha', '>=', fechaInicio.toISOString());
+                        
+                        const ventasSnapshot = await ventasQuery.get();
+                        const ventas = ventasSnapshot.docs.map(doc => ({
+                            id: doc.id,
+                            tipo: 'venta',
+                            ...doc.data()
+                        }));
+
+                        // Combinar y ordenar
+                        const todas = [...prestamos, ...ventas].sort((a, b) => {
+                            const fechaA = new Date(a.fechaHora || a.fecha);
+                            const fechaB = new Date(b.fechaHora || b.fecha);
+                            return fechaB - fechaA;
+                        });
+
+                        // Estadísticas
+                        const totalPrestamos = prestamos.length;
+                        const totalVentas = ventas.length;
+                        const ingresosTotal = ventas.reduce((sum, v) => sum + (v.montoTotal || 0), 0) +
+                                            prestamos.filter(p => !p.esMiembro).reduce((sum, p) => sum + (p.monto || 0), 0);
+
+                        // Renderizar
+                        const container = document.getElementById('historialContent');
+                        container.innerHTML = `
+                            <!-- Stats -->
+                            <div class="grid grid-cols-3 gap-4 mb-6">
+                                <div class="bg-blue-50 rounded-lg p-4">
+                                    <p class="text-sm text-gray-600">Préstamos</p>
+                                    <p class="text-2xl font-bold text-blue-600">${totalPrestamos}</p>
+                                </div>
+                                <div class="bg-green-50 rounded-lg p-4">
+                                    <p class="text-sm text-gray-600">Ventas</p>
+                                    <p class="text-2xl font-bold text-green-600">${totalVentas}</p>
+                                </div>
+                                <div class="bg-yellow-50 rounded-lg p-4">
+                                    <p class="text-sm text-gray-600">Ingresos</p>
+                                    <p class="text-2xl font-bold text-yellow-600">S/ ${ingresosTotal.toFixed(2)}</p>
+                                </div>
+                            </div>
+
+                            <!-- Lista -->
+                            <div class="space-y-3">
+                                ${todas.length === 0 ? '<p class="text-gray-500 text-center py-8">No hay operaciones en este período</p>' :
+                                    todas.map(item => {
+                                        if (item.tipo === 'prestamo') {
+                                            const fechaPrestamo = new Date(item.fechaHora);
+                                            const horaPrestamo = fechaPrestamo.toLocaleTimeString('es-PE', {hour: '2-digit', minute: '2-digit'});
+                                            const fechaTexto = fechaPrestamo.toLocaleDateString('es-PE');
+                                            
+                                            let horaDevolucion = '';
+                                            if (item.devuelto && item.fechaDevolucion) {
+                                                const fechaDev = new Date(item.fechaDevolucion);
+                                                horaDevolucion = fechaDev.toLocaleTimeString('es-PE', {hour: '2-digit', minute: '2-digit'});
+                                            }
+                                            
+                                            return `
+                                                <div class="bg-blue-50 border-l-4 border-blue-500 rounded-lg p-4">
+                                                    <div class="flex justify-between items-start mb-2">
+                                                        <div>
+                                                            <p class="font-semibold text-gray-800">${item.nombre}</p>
+                                                            <p class="text-sm text-gray-600">DNI: ${item.dni}</p>
+                                                        </div>
+                                                        <div class="text-right">
+                                                            <span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs font-semibold">PRÉSTAMO</span>
+                                                            ${item.devuelto ? 
+                                                                `<span class="ml-1 px-2 py-1 bg-green-100 text-green-800 rounded text-xs font-semibold">Devuelto</span>` :
+                                                                `<span class="ml-1 px-2 py-1 bg-orange-100 text-orange-800 rounded text-xs font-semibold">Activo</span>`
+                                                            }
+                                                            ${item.tardanza ? 
+                                                                `<span class="ml-1 px-2 py-1 bg-red-100 text-red-800 rounded text-xs font-semibold">Tardanza</span>` : ''
+                                                            }
+                                                        </div>
+                                                    </div>
+                                                    <p class="text-sm text-gray-700 mb-1 font-medium">${item.nombreArticulo} #${item.numeroUnidad}</p>
+                                                    <div class="text-xs text-gray-600 space-y-1">
+                                                        <p><strong>📅 Fecha:</strong> ${fechaTexto}</p>
+                                                        <p><strong>🕐 Hora préstamo:</strong> ${horaPrestamo}</p>
+                                                        ${item.devuelto && horaDevolucion ? `<p><strong>✅ Hora devolución:</strong> ${horaDevolucion}</p>` : ''}
+                                                        ${item.usuarioRegistro ? `<p><strong>📝 Registrado por:</strong> ${item.usuarioRegistro.split('@')[0]}</p>` : ''}
+                                                        ${item.devuelto && item.usuarioDevolucion ? `<p><strong>🔄 Devuelto por:</strong> ${item.usuarioDevolucion.split('@')[0]}</p>` : ''}
+                                                        ${item.sancion && item.sancion > 0 ? `<p class="text-red-600 font-semibold"><strong>⚠️ Sanción:</strong> S/ ${item.sancion} (${item.metodoPagoSancion})</p>` : ''}
+                                                    </div>
+                                                    ${!item.esMiembro ? `<p class="text-sm font-semibold text-green-700 mt-2">💰 Pagó: S/ ${item.monto} (${item.metodoPago})</p>` : ''}
+                                                </div>
+                                            `;
+                                        } else {
+                                            const fecha = new Date(item.fecha);
+                                            return `
+                                                <div class="bg-green-50 border-l-4 border-green-500 rounded-lg p-4">
+                                                    <div class="flex justify-between items-start mb-2">
+                                                        <div>
+                                                            <p class="font-semibold text-gray-800">${item.nombre}</p>
+                                                            <p class="text-sm text-gray-600">DNI: ${item.dni}</p>
+                                                        </div>
+                                                        <span class="px-2 py-1 bg-green-100 text-green-800 rounded text-xs font-semibold">VENTA</span>
+                                                    </div>
+                                                    <p class="text-sm text-gray-700 mb-1">${item.cantidad}x ${item.nombreArticulo}</p>
+                                                    <p class="text-xs text-gray-600">${fecha.toLocaleString('es-PE')}</p>
+                                                    ${item.usuarioRegistro ? `<p class="text-xs text-blue-600 mt-1">📝 Registrado por: ${item.usuarioRegistro.split('@')[0]}</p>` : ''}
+                                                    <p class="text-sm font-semibold text-green-700 mt-1">Total: S/ ${item.montoTotal.toFixed(2)} (${item.metodoPago})</p>
+                                                </div>
+                                            `;
+                                        }
+                                    }).join('')
+                                }
+                            </div>
+                        `;
+                    } catch (error) {
+                        console.error('Error cargando historial:', error);
+                        document.getElementById('historialContent').innerHTML = '<p class="text-red-500 text-center py-8">Error cargando historial</p>';
+                    }
+                };
+
+                // Event listeners
+                document.querySelectorAll('.filtro-btn').forEach(btn => {
+                    btn.addEventListener('click', () => cargarHistorial(btn.dataset.filtro));
+                });
+
+                // Cargar inicial
+                cargarHistorial('hoy');
+            }
+
+            // ========== MODO ADMIN ==========
+            
+            renderAdmin() {
+                return `
+                    <div class="bg-gradient-to-br from-purple-50 to-pink-50 rounded-2xl p-6 shadow-lg mb-6">
+                        <div class="flex items-center gap-3 mb-4">
+                            <span class="text-4xl">👑</span>
+                            <div>
+                                <h2 class="text-3xl font-bold text-purple-800">Modo Administrador</h2>
+                                <p class="text-purple-600">Panel de gestión - Solo ${this.currentUser.email.split('@')[0]}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        <!-- Gestionar Miembros -->
+                        <button 
+                            onclick="app.view='admin-miembros'; app.renderContent();"
+                            class="bg-white rounded-xl p-6 shadow-md hover:shadow-xl transition-all text-left group"
+                        >
+                            <div class="text-5xl mb-4 group-hover:scale-110 transition-transform">👥</div>
+                            <h3 class="text-xl font-bold text-gray-800 mb-2">Gestionar Miembros</h3>
+                            <p class="text-gray-600">Agregar, editar o eliminar miembros</p>
+                        </button>
+
+                        <!-- Gestionar Inventario -->
+                        <button 
+                            onclick="app.view='admin-inventario'; app.renderContent();"
+                            class="bg-white rounded-xl p-6 shadow-md hover:shadow-xl transition-all text-left group"
+                        >
+                            <div class="text-5xl mb-4 group-hover:scale-110 transition-transform">📦</div>
+                            <h3 class="text-xl font-bold text-gray-800 mb-2">Gestionar Inventario</h3>
+                            <p class="text-gray-600">Agregar artículos, editar stock y etiquetas</p>
+                        </button>
+
+                        <!-- Limpiar Historial -->
+                        <button 
+                            onclick="app.view='admin-limpiar'; app.renderContent();"
+                            class="bg-white rounded-xl p-6 shadow-md hover:shadow-xl transition-all text-left group"
+                        >
+                            <div class="text-5xl mb-4 group-hover:scale-110 transition-transform">🗑️</div>
+                            <h3 class="text-xl font-bold text-gray-800 mb-2">Limpiar Historial</h3>
+                            <p class="text-gray-600">Eliminar registros por período</p>
+                        </button>
+                    </div>
+
+                    <div class="mt-6">
+                        <button 
+                            onclick="app.view='dashboard'; app.renderContent();"
+                            class="bg-gray-300 text-gray-800 px-6 py-3 rounded-lg font-semibold hover:bg-gray-400 transition-colors"
+                        >
+                            ← Volver al Dashboard
+                        </button>
+                    </div>
+                `;
+            }
+
+            attachAdminEvents() {
+                // Los eventos se manejan con onclick en el HTML
+            }
+
+            async agregarMiembro(datos) {
+                try {
+                    await db.collection('miembros').add(datos);
+                    await this.cargarDatos();
+                    alert('¡Miembro agregado exitosamente!');
+                    this.view = 'admin-miembros';
+                    this.renderContent();
+                } catch (error) {
+                    console.error('Error agregando miembro:', error);
+                    alert('Error al agregar miembro');
+                }
+            }
+
+            async editarMiembro(id, datos) {
+                try {
+                    await db.collection('miembros').doc(id).update(datos);
+                    await this.cargarDatos();
+                    alert('¡Miembro actualizado exitosamente!');
+                    this.view = 'admin-miembros';
+                    this.renderContent();
+                } catch (error) {
+                    console.error('Error editando miembro:', error);
+                    alert('Error al editar miembro');
+                }
+            }
+
+            async eliminarMiembro(id) {
+                if (!confirm('¿Estás seguro de eliminar este miembro?')) return;
+                try {
+                    await db.collection('miembros').doc(id).delete();
+                    await this.cargarDatos();
+                    alert('Miembro eliminado');
+                    this.renderContent();
+                } catch (error) {
+                    console.error('Error eliminando miembro:', error);
+                    alert('Error al eliminar miembro');
+                }
+            }
+
+            async limpiarHistorial(fechaInicio, fechaFin) {
+                if (!confirm(`¿Estás seguro de eliminar todos los registros entre ${fechaInicio} y ${fechaFin}? Esta acción no se puede deshacer.`)) return;
+                
+                try {
+                    // Eliminar préstamos
+                    const prestamosQuery = await db.collection('prestamos')
+                        .where('fechaHora', '>=', fechaInicio)
+                        .where('fechaHora', '<=', fechaFin)
+                        .get();
+                    
+                    const batch1 = db.batch();
+                    prestamosQuery.docs.forEach(doc => batch1.delete(doc.ref));
+                    await batch1.commit();
+
+                    // Eliminar ventas
+                    const ventasQuery = await db.collection('ventas')
+                        .where('fecha', '>=', fechaInicio)
+                        .where('fecha', '<=', fechaFin)
+                        .get();
+                    
+                    const batch2 = db.batch();
+                    ventasQuery.docs.forEach(doc => batch2.delete(doc.ref));
+                    await batch2.commit();
+
+                    alert(`Eliminados ${prestamosQuery.size} préstamos y ${ventasQuery.size} ventas`);
+                    await this.cargarDatos();
+                    this.view = 'admin';
+                    this.renderContent();
+                } catch (error) {
+                    console.error('Error limpiando historial:', error);
+                    alert('Error al limpiar historial');
+                }
+            }
+
+            renderAdminMiembros() {
+                return `
+                    <div class="space-y-6">
+                        <div class="flex justify-between items-center">
+                            <h2 class="text-2xl font-bold text-gray-800">👥 Gestionar Miembros</h2>
+                            <button 
+                                onclick="app.view='admin'; app.renderContent();"
+                                class="bg-gray-300 px-4 py-2 rounded-lg font-semibold hover:bg-gray-400"
+                            >
+                                ← Volver
+                            </button>
+                        </div>
+
+                        <!-- Formulario Agregar Miembro -->
+                        <div class="bg-white rounded-xl p-6 shadow-md">
+                            <h3 class="text-xl font-bold text-gray-800 mb-4">Agregar Nuevo Miembro</h3>
+                            <div id="formAgregarMiembro" class="grid grid-cols-2 gap-4">
+                                <input type="text" id="nuevoMiembroDNI" placeholder="DNI" class="px-4 py-2 border-2 border-gray-300 rounded-lg" maxlength="8" />
+                                <input type="text" id="nuevoMiembroNombre" placeholder="Nombre completo" class="px-4 py-2 border-2 border-gray-300 rounded-lg" />
+                                <input type="text" id="nuevoMiembroTelefono" placeholder="Teléfono" class="px-4 py-2 border-2 border-gray-300 rounded-lg" />
+                                <input type="text" id="nuevoMiembroCiclo" placeholder="Ciclo (ej: 3ero)" class="px-4 py-2 border-2 border-gray-300 rounded-lg" />
+                                <button onclick="app.submitAgregarMiembro()" class="col-span-2 bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700">
+                                    Agregar Miembro
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Lista de Miembros -->
+                        <div class="bg-white rounded-xl p-6 shadow-md">
+                            <h3 class="text-xl font-bold text-gray-800 mb-4">Miembros Registrados (${this.miembros.length})</h3>
+                            <div class="space-y-2 max-h-96 overflow-y-auto">
+                                ${this.miembros.map(m => `
+                                    <div class="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                                        <div>
+                                            <p class="font-semibold">${m.nombre}</p>
+                                            <p class="text-sm text-gray-600">DNI: ${m.dni} | Tel: ${m.telefono || '-'} | Ciclo: ${m.ciclo || '-'}</p>
+                                        </div>
+                                        <button 
+                                            onclick="app.eliminarMiembro('${m.id}')"
+                                            class="bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600 text-sm"
+                                        >
+                                            Eliminar
+                                        </button>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            submitAgregarMiembro() {
+                const dni = document.getElementById('nuevoMiembroDNI').value;
+                const nombre = document.getElementById('nuevoMiembroNombre').value;
+                const telefono = document.getElementById('nuevoMiembroTelefono').value;
+                const ciclo = document.getElementById('nuevoMiembroCiclo').value;
+                
+                if (!dni || !nombre) {
+                    alert('DNI y Nombre son obligatorios');
+                    return;
+                }
+                
+                this.agregarMiembro({ dni, nombre, telefono, ciclo });
+            }
+
+            renderAdminInventario() {
+                return `
+                    <div class="space-y-6">
+                        <div class="flex justify-between items-center">
+                            <h2 class="text-2xl font-bold text-gray-800">📦 Gestionar Inventario</h2>
+                            <button 
+                                onclick="app.view='admin'; app.renderContent();"
+                                class="bg-gray-300 px-4 py-2 rounded-lg font-semibold hover:bg-gray-400"
+                            >
+                                ← Volver
+                            </button>
+                        </div>
+
+                        <!-- Botón Agregar Nuevo Artículo -->
+                        <div>
+                            <button 
+                                onclick="app.mostrarAgregarArticulo()"
+                                class="bg-green-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-green-700"
+                            >
+                                + Agregar Nuevo Artículo
+                            </button>
+                        </div>
+
+                        <!-- Inventario Actual -->
+                        <div class="bg-white rounded-xl p-6 shadow-md">
+                            <h3 class="text-xl font-bold text-gray-800 mb-4">Artículos Actuales</h3>
+                            <div class="space-y-4">
+                                ${this.inventario.map(item => `
+                                    <div class="border-2 border-gray-200 rounded-lg p-4">
+                                        <div class="flex justify-between items-start mb-2">
+                                            <div>
+                                                <h4 class="font-bold text-lg">${item.nombre}</h4>
+                                                <p class="text-sm text-gray-600">Tipo: ${item.tipo === 'prestamo' ? 'Préstamo' : 'Venta'}</p>
+                                            </div>
+                                            <button 
+                                                onclick="app.mostrarEditarArticulo('${item.id}')"
+                                                class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600"
+                                            >
+                                                Editar
+                                            </button>
+                                        </div>
+                                        ${item.tipo === 'prestamo' ? `
+                                            <p class="text-sm">Unidades: ${item.cantidad}</p>
+                                            <div class="flex flex-wrap gap-2 mt-2">
+                                                ${item.unidades.map(u => `
+                                                    <span class="px-2 py-1 rounded text-xs ${u.disponible ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">
+                                                        #${u.numero}
+                                                    </span>
+                                                `).join('')}
+                                            </div>
+                                        ` : `
+                                            <p class="text-sm">Stock: ${item.stock} ${item.unidad || 'unidades'}</p>
+                                        `}
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            attachAdminInventarioEvents() {
+                // Los eventos están en onclick
+            }
+
+            renderAdminLimpiar() {
+                const hoy = new Date().toISOString().split('T')[0];
+                return `
+                    <div class="space-y-6">
+                        <div class="flex justify-between items-center">
+                            <h2 class="text-2xl font-bold text-gray-800">🗑️ Limpiar Historial</h2>
+                            <button 
+                                onclick="app.view='admin'; app.renderContent();"
+                                class="bg-gray-300 px-4 py-2 rounded-lg font-semibold hover:bg-gray-400"
+                            >
+                                ← Volver
+                            </button>
+                        </div>
+
+                        <div class="bg-yellow-50 border-2 border-yellow-300 rounded-xl p-6">
+                            <p class="text-yellow-800 font-semibold mb-2">⚠️ Advertencia</p>
+                            <p class="text-yellow-700">Esta acción eliminará permanentemente los registros del período seleccionado. Asegúrate de exportar los datos antes de eliminarlos.</p>
+                        </div>
+
+                        <div class="bg-white rounded-xl p-6 shadow-md">
+                            <h3 class="text-xl font-bold text-gray-800 mb-4">Seleccionar Período</h3>
+                            <form id="formLimpiarHistorial" class="space-y-4">
+                                <div class="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-sm font-semibold text-gray-700 mb-2">Fecha Inicio</label>
+                                        <input type="date" id="fechaInicio" class="w-full px-4 py-2 border-2 border-gray-300 rounded-lg" required />
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-semibold text-gray-700 mb-2">Fecha Fin</label>
+                                        <input type="date" id="fechaFin" max="${hoy}" class="w-full px-4 py-2 border-2 border-gray-300 rounded-lg" required />
+                                    </div>
+                                </div>
+                                <button type="submit" class="w-full bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700">
+                                    Eliminar Registros del Período
+                                </button>
+                            </form>
+
+                            <div class="mt-6 grid grid-cols-3 gap-3">
+                                <button onclick="app.setFechasLimpiar('mes')" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300">Este Mes</button>
+                                <button onclick="app.setFechasLimpiar('mes-pasado')" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300">Mes Pasado</button>
+                                <button onclick="app.setFechasLimpiar('trimestre')" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300">Este Trimestre</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            attachAdminLimpiarEvents() {
+                document.getElementById('formLimpiarHistorial').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    const inicio = document.getElementById('fechaInicio').value + 'T00:00:00.000Z';
+                    const fin = document.getElementById('fechaFin').value + 'T23:59:59.999Z';
+                    app.limpiarHistorial(inicio, fin);
+                });
+            }
+
+            setFechasLimpiar(periodo) {
+                const hoy = new Date();
+                let inicio, fin;
+
+                switch(periodo) {
+                    case 'mes':
+                        inicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+                        fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
+                        break;
+                    case 'mes-pasado':
+                        inicio = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
+                        fin = new Date(hoy.getFullYear(), hoy.getMonth(), 0);
+                        break;
+                    case 'trimestre':
+                        const trimestre = Math.floor(hoy.getMonth() / 3);
+                        inicio = new Date(hoy.getFullYear(), trimestre * 3, 1);
+                        fin = new Date(hoy.getFullYear(), (trimestre + 1) * 3, 0);
+                        break;
+                }
+
+                document.getElementById('fechaInicio').value = inicio.toISOString().split('T')[0];
+                document.getElementById('fechaFin').value = fin.toISOString().split('T')[0];
+            }
+
+            mostrarEditarArticulo(id) {
+                const articulo = this.inventario.find(a => a.id === id);
+                if (!articulo) return;
+
+                const overlay = document.createElement('div');
+                overlay.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto p-4';
+                
+                overlay.innerHTML = `
+                    <div class="bg-white rounded-2xl p-6 max-w-2xl w-full my-4">
+                        <h3 class="text-2xl font-bold text-gray-800 mb-4">Editar: ${articulo.nombre}</h3>
+                        
+                        ${articulo.tipo === 'prestamo' ? `
+                            <div class="mb-4">
+                                <div class="flex justify-between items-center mb-2">
+                                    <p class="font-semibold">Editar Etiquetas de Unidades:</p>
+                                    <div class="flex gap-2">
+                                        <button 
+                                            onclick="app.agregarUnidadTemp()"
+                                            class="bg-green-500 text-white px-3 py-1 rounded text-sm hover:bg-green-600"
+                                        >
+                                            + Agregar Unidad
+                                        </button>
+                                    </div>
+                                </div>
+                                <div id="unidadesContainer" class="space-y-2">
+                                    ${articulo.unidades.map((u, idx) => `
+                                        <div class="flex gap-2 items-center unidad-row">
+                                            <span class="text-sm">${articulo.nombre} #</span>
+                                            <input 
+                                                type="text" 
+                                                value="${u.numero}" 
+                                                id="etiqueta${idx}"
+                                                class="flex-1 px-3 py-2 border-2 border-gray-300 rounded-lg"
+                                                placeholder="Ej: 1, A, Talla 38..."
+                                            />
+                                            <button 
+                                                onclick="this.closest('.unidad-row').remove()"
+                                                class="bg-red-500 text-white px-2 py-1 rounded text-sm hover:bg-red-600"
+                                            >
+                                                ✕
+                                            </button>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        ` : `
+                            <div class="mb-4">
+                                <label class="block font-semibold mb-2">Reponer Stock:</label>
+                                <div class="flex gap-2">
+                                    <input 
+                                        type="number" 
+                                        id="nuevoStock" 
+                                        value="${articulo.stock}"
+                                        class="flex-1 px-4 py-2 border-2 border-gray-300 rounded-lg"
+                                        min="0"
+                                    />
+                                    <span class="flex items-center text-gray-600">${articulo.unidad || 'unidades'}</span>
+                                </div>
+                            </div>
+                        `}
+
+                        <div class="flex gap-3 mt-6">
+                            <button 
+                                onclick="this.closest('.fixed').remove();"
+                                class="flex-1 bg-gray-300 text-gray-800 py-3 rounded-lg font-bold hover:bg-gray-400"
+                            >
+                                Cancelar
+                            </button>
+                            <button 
+                                onclick="app.guardarEdicionArticulo('${id}', ${articulo.tipo === 'prestamo'}); this.closest('.fixed').remove();"
+                                class="flex-1 bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700"
+                            >
+                                Guardar Cambios
+                            </button>
+                        </div>
+                    </div>
+                `;
+                
+                document.body.appendChild(overlay);
+            }
+
+            agregarUnidadTemp() {
+                const container = document.getElementById('unidadesContainer');
+                const numUnidades = container.querySelectorAll('.unidad-row').length;
+                const articulo = this.inventario.find(a => a.id); // Get first to know name
+                
+                const div = document.createElement('div');
+                div.className = 'flex gap-2 items-center unidad-row';
+                div.innerHTML = `
+                    <span class="text-sm">Nueva #</span>
+                    <input 
+                        type="text" 
+                        value="${numUnidades + 1}" 
+                        id="etiqueta${numUnidades}"
+                        class="flex-1 px-3 py-2 border-2 border-gray-300 rounded-lg"
+                        placeholder="Ej: ${numUnidades + 1}, A, Talla 38..."
+                    />
+                    <button 
+                        onclick="this.closest('.unidad-row').remove()"
+                        class="bg-red-500 text-white px-2 py-1 rounded text-sm hover:bg-red-600"
+                    >
+                        ✕
+                    </button>
+                `;
+                container.appendChild(div);
+            }
+
+            async guardarEdicionArticulo(id, esPrestamo) {
+                try {
+                    const articulo = this.inventario.find(a => a.id === id);
+                    
+                    if (esPrestamo) {
+                        // Recopilar todas las etiquetas
+                        const rows = document.querySelectorAll('.unidad-row');
+                        const nuevasUnidades = [];
+                        
+                        rows.forEach((row, idx) => {
+                            const input = row.querySelector('input');
+                            if (input && input.value.trim()) {
+                                // Buscar si ya existe esta unidad
+                                const unidadExistente = articulo.unidades.find(u => u.numero == input.value.trim());
+                                nuevasUnidades.push({
+                                    numero: input.value.trim(),
+                                    disponible: unidadExistente ? unidadExistente.disponible : true
+                                });
+                            }
+                        });
+                        
+                        await db.collection('inventario').doc(id).update({
+                            unidades: nuevasUnidades,
+                            cantidad: nuevasUnidades.length
+                        });
+                    } else {
+                        // Actualizar stock
+                        const nuevoStock = parseInt(document.getElementById('nuevoStock').value);
+                        await db.collection('inventario').doc(id).update({
+                            stock: nuevoStock
+                        });
+                    }
+
+                    await this.cargarDatos();
+                    alert('¡Artículo actualizado!');
+                    this.renderContent();
+                } catch (error) {
+                    console.error('Error actualizando artículo:', error);
+                    alert('Error al actualizar artículo');
+                }
+            }
+
+            mostrarAgregarArticulo() {
+                const overlay = document.createElement('div');
+                overlay.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto p-4';
+                
+                overlay.innerHTML = `
+                    <div class="bg-white rounded-2xl p-6 max-w-2xl w-full my-4">
+                        <h3 class="text-2xl font-bold text-gray-800 mb-4">Agregar Nuevo Artículo</h3>
+                        
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block font-semibold mb-2">Nombre del Artículo:</label>
+                                <input 
+                                    type="text" 
+                                    id="nuevoArticuloNombre"
+                                    class="w-full px-4 py-2 border-2 border-gray-300 rounded-lg"
+                                    placeholder="Ej: Mandil, Microscopio..."
+                                />
+                            </div>
+
+                            <div>
+                                <label class="block font-semibold mb-2">Tipo:</label>
+                                <div class="flex gap-4">
+                                    <button 
+                                        onclick="app.toggleTipoArticulo('prestamo')"
+                                        id="btnTipoPrestamo"
+                                        class="flex-1 py-3 rounded-lg font-semibold bg-blue-600 text-white"
+                                    >
+                                        Préstamo
+                                    </button>
+                                    <button 
+                                        onclick="app.toggleTipoArticulo('venta')"
+                                        id="btnTipoVenta"
+                                        class="flex-1 py-3 rounded-lg font-semibold bg-gray-200"
+                                    >
+                                        Venta
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div id="camposPrestamo">
+                                <div class="mb-3">
+                                    <label class="block font-semibold mb-2">Cantidad de Unidades:</label>
+                                    <input 
+                                        type="number" 
+                                        id="cantidadUnidades"
+                                        min="1"
+                                        value="1"
+                                        class="w-full px-4 py-2 border-2 border-gray-300 rounded-lg"
+                                    />
+                                </div>
+                                <div>
+                                    <label class="block font-semibold mb-2">¿Diferencia precio Miembro/No-Miembro?</label>
+                                    <div class="flex gap-4">
+                                        <button 
+                                            onclick="app.togglePrecioDiferenciado(true)"
+                                            id="btnPrecioSi"
+                                            class="flex-1 py-2 rounded-lg font-semibold bg-green-600 text-white"
+                                        >
+                                            Sí (Gratis miembros)
+                                        </button>
+                                        <button 
+                                            onclick="app.togglePrecioDiferenciado(false)"
+                                            id="btnPrecioNo"
+                                            class="flex-1 py-2 rounded-lg font-semibold bg-gray-200"
+                                        >
+                                            No (Todos pagan igual)
+                                        </button>
+                                    </div>
+                                </div>
+                                <div id="preciosPrestamo" class="mt-3 grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-1">Precio No-Miembro:</label>
+                                        <input 
+                                            type="number" 
+                                            id="precioNoMiembro"
+                                            value="3"
+                                            min="0"
+                                            step="0.5"
+                                            class="w-full px-3 py-2 border-2 border-gray-300 rounded-lg"
+                                        />
+                                    </div>
+                                    <div class="opacity-50">
+                                        <label class="block text-sm font-semibold mb-1">Precio Miembro:</label>
+                                        <input 
+                                            type="number" 
+                                            value="0"
+                                            disabled
+                                            class="w-full px-3 py-2 border-2 border-gray-300 rounded-lg bg-gray-100"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div id="camposVenta" class="hidden">
+                                <div class="mb-3">
+                                    <label class="block font-semibold mb-2">Stock Inicial:</label>
+                                    <input 
+                                        type="number" 
+                                        id="stockInicial"
+                                        min="0"
+                                        value="100"
+                                        class="w-full px-4 py-2 border-2 border-gray-300 rounded-lg"
+                                    />
+                                </div>
+                                <div class="mb-3">
+                                    <label class="block font-semibold mb-2">Alerta Mínimo:</label>
+                                    <input 
+                                        type="number" 
+                                        id="alertaMinimo"
+                                        min="0"
+                                        value="20"
+                                        class="w-full px-4 py-2 border-2 border-gray-300 rounded-lg"
+                                    />
+                                </div>
+                                <div class="mb-3">
+                                    <label class="block font-semibold mb-2">Unidad (opcional):</label>
+                                    <input 
+                                        type="text" 
+                                        id="unidadVenta"
+                                        placeholder="Ej: pods, pares, cajas..."
+                                        class="w-full px-4 py-2 border-2 border-gray-300 rounded-lg"
+                                    />
+                                </div>
+                                <div>
+                                    <label class="block font-semibold mb-2">¿Diferencia precio Miembro/No-Miembro?</label>
+                                    <div class="flex gap-4">
+                                        <button 
+                                            onclick="app.togglePrecioDiferenciadoVenta(true)"
+                                            id="btnPrecioVentaSi"
+                                            class="flex-1 py-2 rounded-lg font-semibold bg-gray-200"
+                                        >
+                                            Sí
+                                        </button>
+                                        <button 
+                                            onclick="app.togglePrecioDiferenciadoVenta(false)"
+                                            id="btnPrecioVentaNo"
+                                            class="flex-1 py-2 rounded-lg font-semibold bg-green-600 text-white"
+                                        >
+                                            No (Todos igual)
+                                        </button>
+                                    </div>
+                                </div>
+                                <div id="preciosVenta" class="mt-3">
+                                    <label class="block font-semibold mb-2">Precio:</label>
+                                    <input 
+                                        type="number" 
+                                        id="precioVenta"
+                                        value="1"
+                                        min="0"
+                                        step="0.5"
+                                        class="w-full px-4 py-2 border-2 border-gray-300 rounded-lg"
+                                    />
+                                </div>
+                                <div id="preciosVentaDiferenciados" class="mt-3 grid grid-cols-2 gap-3 hidden">
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-1">Precio Miembro:</label>
+                                        <input 
+                                            type="number" 
+                                            id="precioVentaMiembro"
+                                            value="3"
+                                            min="0"
+                                            step="0.5"
+                                            class="w-full px-3 py-2 border-2 border-gray-300 rounded-lg"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-1">Precio No-Miembro:</label>
+                                        <input 
+                                            type="number" 
+                                            id="precioVentaNoMiembro"
+                                            value="5"
+                                            min="0"
+                                            step="0.5"
+                                            class="w-full px-3 py-2 border-2 border-gray-300 rounded-lg"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flex gap-3 mt-6">
+                            <button 
+                                onclick="this.closest('.fixed').remove();"
+                                class="flex-1 bg-gray-300 text-gray-800 py-3 rounded-lg font-bold hover:bg-gray-400"
+                            >
+                                Cancelar
+                            </button>
+                            <button 
+                                onclick="app.guardarNuevoArticulo(); this.closest('.fixed').remove();"
+                                class="flex-1 bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700"
+                            >
+                                Crear Artículo
+                            </button>
+                        </div>
+                    </div>
+                `;
+                
+                document.body.appendChild(overlay);
+            }
+
+            toggleTipoArticulo(tipo) {
+                document.getElementById('btnTipoPrestamo').className = tipo === 'prestamo' 
+                    ? 'flex-1 py-3 rounded-lg font-semibold bg-blue-600 text-white'
+                    : 'flex-1 py-3 rounded-lg font-semibold bg-gray-200';
+                document.getElementById('btnTipoVenta').className = tipo === 'venta'
+                    ? 'flex-1 py-3 rounded-lg font-semibold bg-blue-600 text-white'
+                    : 'flex-1 py-3 rounded-lg font-semibold bg-gray-200';
+                
+                document.getElementById('camposPrestamo').classList.toggle('hidden', tipo === 'venta');
+                document.getElementById('camposVenta').classList.toggle('hidden', tipo === 'prestamo');
+            }
+
+            togglePrecioDiferenciado(diferenciado) {
+                document.getElementById('btnPrecioSi').className = diferenciado
+                    ? 'flex-1 py-2 rounded-lg font-semibold bg-green-600 text-white'
+                    : 'flex-1 py-2 rounded-lg font-semibold bg-gray-200';
+                document.getElementById('btnPrecioNo').className = !diferenciado
+                    ? 'flex-1 py-2 rounded-lg font-semibold bg-green-600 text-white'
+                    : 'flex-1 py-2 rounded-lg font-semibold bg-gray-200';
+            }
+
+            togglePrecioDiferenciadoVenta(diferenciado) {
+                document.getElementById('btnPrecioVentaSi').className = diferenciado
+                    ? 'flex-1 py-2 rounded-lg font-semibold bg-green-600 text-white'
+                    : 'flex-1 py-2 rounded-lg font-semibold bg-gray-200';
+                document.getElementById('btnPrecioVentaNo').className = !diferenciado
+                    ? 'flex-1 py-2 rounded-lg font-semibold bg-green-600 text-white'
+                    : 'flex-1 py-2 rounded-lg font-semibold bg-gray-200';
+                
+                document.getElementById('preciosVenta').classList.toggle('hidden', diferenciado);
+                document.getElementById('preciosVentaDiferenciados').classList.toggle('hidden', !diferenciado);
+            }
+
+            async guardarNuevoArticulo() {
+                try {
+                    const nombre = document.getElementById('nuevoArticuloNombre').value.trim();
+                    if (!nombre) {
+                        alert('El nombre es obligatorio');
+                        return;
+                    }
+
+                    const esPrestamo = !document.getElementById('camposPrestamo').classList.contains('hidden');
+                    
+                    let nuevoArticulo;
+                    
+                    if (esPrestamo) {
+                        const cantidad = parseInt(document.getElementById('cantidadUnidades').value);
+                        const precioDiferenciado = document.getElementById('btnPrecioSi').classList.contains('bg-green-600');
+                        const precioNoMiembro = parseFloat(document.getElementById('precioNoMiembro').value);
+                        
+                        nuevoArticulo = {
+                            nombre,
+                            tipo: 'prestamo',
+                            cantidad,
+                            precioDiferenciado,
+                            precioMiembro: 0,
+                            precioNoMiembro,
+                            unidades: Array.from({length: cantidad}, (_, i) => ({
+                                numero: (i + 1).toString(),
+                                disponible: true
+                            }))
+                        };
+                    } else {
+                        const stock = parseInt(document.getElementById('stockInicial').value);
+                        const alertaMinimo = parseInt(document.getElementById('alertaMinimo').value);
+                        const unidad = document.getElementById('unidadVenta').value.trim();
+                        const precioDiferenciado = document.getElementById('btnPrecioVentaSi').classList.contains('bg-green-600');
+                        
+                        nuevoArticulo = {
+                            nombre,
+                            tipo: 'venta',
+                            stock,
+                            alertaMinimo,
+                            precioDiferenciado
+                        };
+                        
+                        if (unidad) nuevoArticulo.unidad = unidad;
+                        
+                        if (precioDiferenciado) {
+                            nuevoArticulo.precioMiembro = parseFloat(document.getElementById('precioVentaMiembro').value);
+                            nuevoArticulo.precioNoMiembro = parseFloat(document.getElementById('precioVentaNoMiembro').value);
+                        } else {
+                            nuevoArticulo.precio = parseFloat(document.getElementById('precioVenta').value);
+                        }
+                    }
+
+                    await db.collection('inventario').add(nuevoArticulo);
+                    await this.cargarDatos();
+                    alert('¡Artículo creado exitosamente!');
+                    this.renderContent();
+                } catch (error) {
+                    console.error('Error creando artículo:', error);
+                    alert('Error al crear artículo');
+                }
+            }
+        }
+
+        // Iniciar app
+        const app = new App();
+        window.app = app; // Para acceder desde onclick
+    </script>
+</body>
+</html>
