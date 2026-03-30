@@ -174,14 +174,18 @@
                 await this.inicializarDatosIniciales();
             }
 
-            async inicializarDatosIniciales() {
-                try {
-                    // Verificar si ya hay miembros en Firebase
-                    const miembrosSnapshot = await db.collection('miembros').limit(1).get();
-                    
-                    if (miembrosSnapshot.empty) {
-                        console.log('No hay miembros en Firebase. Agrégalos desde la consola de Firebase o desde la sección Miembros.');
-                    }
+           async inicializarDatosIniciales() {
+        try {
+            // Verifica si hay miembros, pero NO intentes crear usuarios aquí
+            const miembrosSnapshot = await db.collection('miembros').limit(1).get();
+                if (miembrosSnapshot.empty) {
+                    console.log('No hay miembros en Firebase.');
+                }
+                    // ELIMINA EL BUCLE FOR QUE USABA auth.createUserWithEmailAndPassword
+                   } catch (error) {
+                    console.error('Error inicializando datos:', error);
+                }
+            }
 
                     // INICIALIZACIÓN DE INVENTARIO DESHABILITADA
                     // (Para evitar que recree artículos automáticamente)
@@ -380,7 +384,7 @@
                     await db.collection('prestamos').add(prestamo);
 
                     // Actualizar inventario
-                    const articulo = this.inventario.find(a => a.id === datos.articuloId);
+                    articulo = this.inventario.find(a => a.id === datos.articuloId);
                     console.log('Actualizando inventario:', {
                         articuloId: datos.articuloId,
                         articuloEncontrado: !!articulo,
